@@ -1,4 +1,8 @@
-REPO_ROOT := $(shell git rev-parse --show-toplevel 2>/dev/null || dirname $(realpath $(lastword $(MAKEFILE_LIST)))/..)
+# spaghetti is its own git repo nested inside the uv workspace root, so
+# `git rev-parse --show-toplevel` would return spaghetti's own root, not
+# the workspace root where `uv build` actually writes dist/ — derive it
+# from the Makefile's own location instead (always one level up).
+REPO_ROOT := $(shell realpath $(dir $(realpath $(lastword $(MAKEFILE_LIST))))..)
 
 .PHONY: clean build publish test lint check reinstall help
 
@@ -12,7 +16,7 @@ build: clean ## Build sdist and wheel
 
 publish: build ## Publish to PyPI using token from .env
 	@test -f .env || (echo "ERROR: .env file not found"; exit 1)
-	@uv publish --token "$$(grep UV_PUBLISH_TOKEN .env | cut -d= -f2)" $$(ls $(REPO_ROOT)/dist/spaghetti-*)
+	@uv publish --token "$$(grep UV_PUBLISH_TOKEN .env | cut -d= -f2)" $$(ls $(REPO_ROOT)/dist/spaghetti_detector-*)
 
 test: ## Run tests
 	uv run pytest tests/ -q
