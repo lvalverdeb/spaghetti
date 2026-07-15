@@ -1,6 +1,7 @@
 """Package-wide configuration: workspace root, thresholds, layer rules, and the
 mutable package registry used by every check function and the CLI.
 """
+
 from __future__ import annotations
 
 import re

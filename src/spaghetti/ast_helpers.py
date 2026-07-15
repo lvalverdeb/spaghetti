@@ -1,4 +1,5 @@
 """AST utility functions shared across check modules."""
+
 from __future__ import annotations
 
 import ast

@@ -1,4 +1,5 @@
 """Cross-file, whole-package checks (import cycles, duplicate functions, sync/async twins)."""
+
 from __future__ import annotations
 
 import ast
@@ -265,9 +266,7 @@ def check_sync_async_twins_pkg(
 # ── Rule: Orphan Interfaces ───────────────────────────────────────────────────
 
 
-def check_orphan_interfaces_pkg(
-    pkg_name: str, files: list[tuple[Path, ast.Module]]
-) -> list[Issue]:
+def check_orphan_interfaces_pkg(pkg_name: str, files: list[tuple[Path, ast.Module]]) -> list[Issue]:
     """Detect abstract classes with exactly one concrete implementation.
 
     This is a classic 'Speculative Generality' code smell. If an interface
@@ -298,9 +297,7 @@ def check_orphan_interfaces_pkg(
 
             for keyword in node.keywords:
                 if keyword.arg == "metaclass":
-                    val_name = getattr(
-                        keyword.value, "id", getattr(keyword.value, "attr", "")
-                    )
+                    val_name = getattr(keyword.value, "id", getattr(keyword.value, "attr", ""))
                     if val_name == "ABCMeta":
                         is_abstract = True
 

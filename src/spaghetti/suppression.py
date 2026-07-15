@@ -1,4 +1,5 @@
 """Inline ``# spaghetti-ignore`` suppression support."""
+
 from __future__ import annotations
 
 from spaghetti.config import SUPPRESS_MARKER_RE

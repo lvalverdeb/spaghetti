@@ -1,4 +1,5 @@
 """Per-file AST-based checks — the core 27 rules."""
+
 from __future__ import annotations
 
 import ast
@@ -952,9 +953,7 @@ def check_lazy_class(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
     for node in ast.walk(tree):
         if not isinstance(node, ast.ClassDef):
             continue
-        methods = [
-            n for n in node.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
-        ]
+        methods = [n for n in node.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
         if len(methods) < 2:
             issues.append(
                 Issue(
@@ -1080,16 +1079,12 @@ def check_pass_through_methods(tree: ast.Module, filepath: Path, pkg: str) -> li
         if isinstance(stmt, ast.Return):
             if isinstance(stmt.value, ast.Call):
                 call_node = stmt.value
-            elif isinstance(stmt.value, ast.Await) and isinstance(
-                stmt.value.value, ast.Call
-            ):
+            elif isinstance(stmt.value, ast.Await) and isinstance(stmt.value.value, ast.Call):
                 call_node = stmt.value.value
         elif isinstance(stmt, ast.Expr):
             if isinstance(stmt.value, ast.Call):
                 call_node = stmt.value
-            elif isinstance(stmt.value, ast.Await) and isinstance(
-                stmt.value.value, ast.Call
-            ):
+            elif isinstance(stmt.value, ast.Await) and isinstance(stmt.value.value, ast.Call):
                 call_node = stmt.value.value
 
         if not call_node:
@@ -1102,14 +1097,10 @@ def check_pass_through_methods(tree: ast.Module, filepath: Path, pkg: str) -> li
         ):
             continue
 
-        is_pure_delegation = all(
-            isinstance(a, (ast.Name, ast.Starred)) for a in call_node.args
-        )
+        is_pure_delegation = all(isinstance(a, (ast.Name, ast.Starred)) for a in call_node.args)
 
         if is_pure_delegation:
-            is_pure_delegation = all(
-                isinstance(k.value, ast.Name) for k in call_node.keywords
-            )
+            is_pure_delegation = all(isinstance(k.value, ast.Name) for k in call_node.keywords)
 
         if is_pure_delegation:
             target = ast.unparse(call_node.func)

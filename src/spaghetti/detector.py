@@ -14,6 +14,7 @@ All actual logic lives in:
   - spaghetti.scoring         (health score, remediation plan)
   - spaghetti.cli             (CLI entry point, resolve_packages)
 """
+
 from __future__ import annotations
 
 import ast

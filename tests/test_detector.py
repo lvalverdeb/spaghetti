@@ -59,9 +59,7 @@ def test_check_deep_nesting_flags_excessive_nesting():
     for i in range(ds.MAX_NESTING_DEPTH + 2):
         nested += indent * (i + 1) + "if True:\n"
     nested += indent * (ds.MAX_NESTING_DEPTH + 3) + "pass\n"
-    source = "def deeply_nested():\n" + "\n".join(
-        "    " + line for line in nested.splitlines()
-    )
+    source = "def deeply_nested():\n" + "\n".join("    " + line for line in nested.splitlines())
     issues = ds.check_deep_nesting(_parse(source), Path("f.py"), "pkg")
     assert len(issues) == 1
     assert issues[0].rule == "deep-nesting"
@@ -141,7 +139,10 @@ def test_scan_package_finds_issues_in_synthetic_package(fake_package: Path):
 
 def test_scan_package_missing_path_returns_empty_result(tmp_path: Path):
     result = ds.scan_package(
-        "missing", tmp_path / "does-not-exist", exclude=[], min_duplicate_lines=5,
+        "missing",
+        tmp_path / "does-not-exist",
+        exclude=[],
+        min_duplicate_lines=5,
         twin_similarity=0.6,
     )
     assert result.files_scanned == 0
@@ -150,7 +151,10 @@ def test_scan_package_missing_path_returns_empty_result(tmp_path: Path):
 
 def test_scan_package_respects_exclude(fake_package: Path):
     result = ds.scan_package(
-        "fake_pkg", fake_package, exclude=["messy.py"], min_duplicate_lines=5,
+        "fake_pkg",
+        fake_package,
+        exclude=["messy.py"],
+        min_duplicate_lines=5,
         twin_similarity=0.6,
     )
     assert result.files_scanned == 1
@@ -252,9 +256,7 @@ def test_unsuppressed_issues_unaffected_elsewhere_in_file(tmp_path: Path):
     assert len(bare_excepts) == 1
     assert result.suppressed == 1
     # Suppressed issues must not count toward severity totals / exit codes.
-    assert result.warning_count == len(
-        [i for i in result.issues if i.severity == "warning"]
-    )
+    assert result.warning_count == len([i for i in result.issues if i.severity == "warning"])
 
 
 # ── SpaghettiReviewAgent ──────────────────────────────────────────────────────
@@ -267,8 +269,11 @@ def test_agent_review_populates_result_and_calls_scan_package(
 
     def fake_scan_package(pkg_name, pkg_path, *, exclude, min_duplicate_lines, twin_similarity):
         captured.update(
-            pkg_name=pkg_name, pkg_path=pkg_path, exclude=exclude,
-            min_duplicate_lines=min_duplicate_lines, twin_similarity=twin_similarity,
+            pkg_name=pkg_name,
+            pkg_path=pkg_path,
+            exclude=exclude,
+            min_duplicate_lines=min_duplicate_lines,
+            twin_similarity=twin_similarity,
         )
         return ds.ScanResult(files_scanned=1)
 
@@ -280,8 +285,13 @@ def test_agent_review_populates_result_and_calls_scan_package(
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         try:
             agent = ds.SpaghettiReviewAgent(
-                "fake_pkg", fake_package, exclude=["x"], min_duplicate_lines=7,
-                twin_similarity=0.5, executor=executor, skip_logger=True,
+                "fake_pkg",
+                fake_package,
+                exclude=["x"],
+                min_duplicate_lines=7,
+                twin_similarity=0.5,
+                executor=executor,
+                skip_logger=True,
             )
             async with agent:
                 result = await agent.review()
@@ -293,8 +303,11 @@ def test_agent_review_populates_result_and_calls_scan_package(
     result = asyncio.run(run())
     assert result.files_scanned == 1
     assert captured == {
-        "pkg_name": "fake_pkg", "pkg_path": fake_package, "exclude": ["x"],
-        "min_duplicate_lines": 7, "twin_similarity": 0.5,
+        "pkg_name": "fake_pkg",
+        "pkg_path": fake_package,
+        "exclude": ["x"],
+        "min_duplicate_lines": 7,
+        "twin_similarity": 0.5,
     }
 
 
@@ -303,8 +316,13 @@ def test_agent_review_after_close_raises():
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         try:
             agent = ds.SpaghettiReviewAgent(
-                "fake_pkg", Path("/nonexistent"), exclude=[], min_duplicate_lines=5,
-                twin_similarity=0.6, executor=executor, skip_logger=True,
+                "fake_pkg",
+                Path("/nonexistent"),
+                exclude=[],
+                min_duplicate_lines=5,
+                twin_similarity=0.6,
+                executor=executor,
+                skip_logger=True,
             )
             agent.close()
             with pytest.raises(RuntimeError, match="is closed"):
@@ -327,7 +345,10 @@ def test_review_packages_concurrently_returns_correct_mapping(
     try:
         results = asyncio.run(
             ds.review_packages_concurrently(
-                ["a", "b"], exclude=[], min_duplicate_lines=5, twin_similarity=0.6,
+                ["a", "b"],
+                exclude=[],
+                min_duplicate_lines=5,
+                twin_similarity=0.6,
                 executor=executor,
             )
         )
@@ -359,7 +380,10 @@ def test_review_packages_concurrently_actually_overlaps(monkeypatch: pytest.Monk
     try:
         results = asyncio.run(
             ds.review_packages_concurrently(
-                pkg_names, exclude=[], min_duplicate_lines=5, twin_similarity=0.6,
+                pkg_names,
+                exclude=[],
+                min_duplicate_lines=5,
+                twin_similarity=0.6,
                 executor=executor,
             )
         )
@@ -381,16 +405,17 @@ def test_review_packages_concurrently_propagates_a_failing_package(
         return ds.ScanResult(files_scanned=1)
 
     monkeypatch.setattr(ds, "scan_package", flaky_scan_package)
-    monkeypatch.setattr(
-        ds, "PACKAGES", {"ok": Path("/fake/ok"), "broken": Path("/fake/broken")}
-    )
+    monkeypatch.setattr(ds, "PACKAGES", {"ok": Path("/fake/ok"), "broken": Path("/fake/broken")})
 
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
     try:
         with pytest.raises(RuntimeError, match="scan exploded"):
             asyncio.run(
                 ds.review_packages_concurrently(
-                    ["ok", "broken"], exclude=[], min_duplicate_lines=5, twin_similarity=0.6,
+                    ["ok", "broken"],
+                    exclude=[],
+                    min_duplicate_lines=5,
+                    twin_similarity=0.6,
                     executor=executor,
                 )
             )
@@ -443,9 +468,7 @@ def test_parse_package_args_resolves_relative_to_cwd(tmp_path: Path):
 
 
 def test_parse_package_args_multiple_entries(tmp_path: Path):
-    packages = ds._parse_package_args(
-        ["a=src/a", "b=src/b"], cwd=tmp_path
-    )
+    packages = ds._parse_package_args(["a=src/a", "b=src/b"], cwd=tmp_path)
     assert packages == {
         "a": (tmp_path / "src" / "a").resolve(),
         "b": (tmp_path / "src" / "b").resolve(),
@@ -460,9 +483,7 @@ def test_parse_package_args_rejects_malformed_entries(tmp_path: Path, bad_entry:
 
 def test_resolve_packages_defaults_when_no_config_or_package_args(tmp_path: Path):
     defaults = {"a": Path("/fake/a")}
-    result = ds.resolve_packages(
-        config_path=None, package_args=[], defaults=defaults, cwd=tmp_path
-    )
+    result = ds.resolve_packages(config_path=None, package_args=[], defaults=defaults, cwd=tmp_path)
     assert result == defaults
     # Must be a copy, not the same object, so callers can't mutate defaults.
     assert result is not defaults
@@ -529,9 +550,7 @@ def test_main_scans_ad_hoc_package_via_cli_flag(
     assert "bare-except" in out
 
 
-def test_main_errors_on_unknown_package_name(
-    fake_package: Path, monkeypatch: pytest.MonkeyPatch
-):
+def test_main_errors_on_unknown_package_name(fake_package: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(ds, "PACKAGES", dict(ds.PACKAGES))  # restore after test
     monkeypatch.setattr(
         "sys.argv",
@@ -686,12 +705,7 @@ def test_check_excessive_returns_flags_many():
 
 
 def test_check_excessive_returns_clean():
-    source = (
-        "def func(x: int) -> int:\n"
-        "    if x > 0:\n"
-        "        return 1\n"
-        "    return 0\n"
-    )
+    source = "def func(x: int) -> int:\n    if x > 0:\n        return 1\n    return 0\n"
     issues = ds.check_excessive_returns(_parse(source), Path("f.py"), "pkg")
     assert issues == []
 
@@ -711,10 +725,7 @@ def test_check_boolean_flags_flags_many():
 
 
 def test_check_boolean_flags_clean():
-    source = (
-        "def func(a: int = 0, b: str = '', c: float = 1.0) -> None:\n"
-        "    pass\n"
-    )
+    source = "def func(a: int = 0, b: str = '', c: float = 1.0) -> None:\n    pass\n"
     issues = ds.check_boolean_flag_params(_parse(source), Path("f.py"), "pkg")
     assert issues == []
 
@@ -787,13 +798,7 @@ def test_check_swallowed_flags_ellipsis():
 
 
 def test_check_swallowed_allows_log():
-    source = (
-        "def f():\n"
-        "    try:\n"
-        "        pass\n"
-        "    except Exception as e:\n"
-        "        print(e)\n"
-    )
+    source = "def f():\n    try:\n        pass\n    except Exception as e:\n        print(e)\n"
     issues = ds.check_swallowed_exceptions(_parse(source), Path("f.py"), "pkg")
     assert issues == []
 
@@ -802,38 +807,20 @@ def test_check_swallowed_allows_log():
 
 
 def test_check_duplicate_branches_flags_identical():
-    source = (
-        "def f():\n"
-        "    if True:\n"
-        "        x = 1\n"
-        "    else:\n"
-        "        x = 1\n"
-    )
+    source = "def f():\n    if True:\n        x = 1\n    else:\n        x = 1\n"
     issues = ds.check_duplicate_branches(_parse(source), Path("f.py"), "pkg")
     assert len(issues) == 1
     assert issues[0].rule == "duplicate-branch"
 
 
 def test_check_duplicate_branches_skips_elif():
-    source = (
-        "def f():\n"
-        "    if True:\n"
-        "        x = 1\n"
-        "    elif False:\n"
-        "        x = 1\n"
-    )
+    source = "def f():\n    if True:\n        x = 1\n    elif False:\n        x = 1\n"
     issues = ds.check_duplicate_branches(_parse(source), Path("f.py"), "pkg")
     assert issues == []
 
 
 def test_check_duplicate_branches_clean():
-    source = (
-        "def f():\n"
-        "    if True:\n"
-        "        x = 1\n"
-        "    else:\n"
-        "        x = 2\n"
-    )
+    source = "def f():\n    if True:\n        x = 1\n    else:\n        x = 2\n"
     issues = ds.check_duplicate_branches(_parse(source), Path("f.py"), "pkg")
     assert issues == []
 
@@ -870,21 +857,13 @@ def test_check_encapsulation_flags_getattr_private():
 
 
 def test_check_encapsulation_allows_self():
-    source = (
-        "class Foo:\n"
-        "    def method(self) -> int:\n"
-        "        return self._x\n"
-    )
+    source = "class Foo:\n    def method(self) -> int:\n        return self._x\n"
     issues = ds.check_encapsulation_violations(_parse(source), Path("f.py"), "pkg")
     assert issues == []
 
 
 def test_check_encapsulation_allows_dunder():
-    source = (
-        "class Foo:\n"
-        "    def method(self) -> int:\n"
-        "        return self.__dict__\n"
-    )
+    source = "class Foo:\n    def method(self) -> int:\n        return self.__dict__\n"
     issues = ds.check_encapsulation_violations(_parse(source), Path("f.py"), "pkg")
     assert issues == []
 
@@ -893,7 +872,9 @@ def test_check_encapsulation_allows_dunder():
 
 
 def test_check_god_class_flags_many_methods():
-    methods = "\n".join(f"    def m{i}(self) -> None: pass" for i in range(ds.MAX_CLASS_METHODS + 3))
+    methods = "\n".join(
+        f"    def m{i}(self) -> None: pass" for i in range(ds.MAX_CLASS_METHODS + 3)
+    )
     source = f"class GodClass:\n{methods}\n"
     issues = ds.check_god_class(_parse(source), Path("f.py"), "pkg")
     assert len(issues) == 1
@@ -901,7 +882,9 @@ def test_check_god_class_flags_many_methods():
 
 
 def test_check_god_class_error_at_extreme():
-    methods = "\n".join(f"    def m{i}(self) -> None: pass" for i in range(int(ds.MAX_CLASS_METHODS * 1.5) + 1))
+    methods = "\n".join(
+        f"    def m{i}(self) -> None: pass" for i in range(int(ds.MAX_CLASS_METHODS * 1.5) + 1)
+    )
     source = f"class GodClass:\n{methods}\n"
     issues = ds.check_god_class(_parse(source), Path("f.py"), "pkg")
     assert len(issues) == 1
@@ -909,11 +892,7 @@ def test_check_god_class_error_at_extreme():
 
 
 def test_check_god_class_clean():
-    source = (
-        "class SmallClass:\n"
-        "    def m1(self) -> None: pass\n"
-        "    def m2(self) -> None: pass\n"
-    )
+    source = "class SmallClass:\n    def m1(self) -> None: pass\n    def m2(self) -> None: pass\n"
     issues = ds.check_god_class(_parse(source), Path("f.py"), "pkg")
     assert issues == []
 
@@ -1080,12 +1059,7 @@ def test_check_global_mutations_skips_non_mutable():
 
 
 def test_check_scope_mutations_flags_global_augassign():
-    source = (
-        "counter = 0\n"
-        "def increment():\n"
-        "    global counter\n"
-        "    counter += 1\n"
-    )
+    source = "counter = 0\ndef increment():\n    global counter\n    counter += 1\n"
     issues = ds.check_scope_mutations(_parse(source), Path("f.py"), "pkg")
     assert len(issues) == 1
     assert issues[0].rule == "scope-mutation"
@@ -1094,12 +1068,7 @@ def test_check_scope_mutations_flags_global_augassign():
 
 
 def test_check_scope_mutations_flags_global_assign():
-    source = (
-        "config = {}\n"
-        "def reload() -> None:\n"
-        "    global config\n"
-        "    config = load_config()\n"
-    )
+    source = "config = {}\ndef reload() -> None:\n    global config\n    config = load_config()\n"
     issues = ds.check_scope_mutations(_parse(source), Path("f.py"), "pkg")
     assert len(issues) == 1
     assert issues[0].rule == "scope-mutation"
@@ -1120,32 +1089,19 @@ def test_check_scope_mutations_flags_nonlocal():
 
 
 def test_check_scope_mutations_skips_read_only():
-    source = (
-        "counter = 0\n"
-        "def read() -> int:\n"
-        "    global counter\n"
-        "    return counter\n"
-    )
+    source = "counter = 0\ndef read() -> int:\n    global counter\n    return counter\n"
     issues = ds.check_scope_mutations(_parse(source), Path("f.py"), "pkg")
     assert issues == []
 
 
 def test_check_scope_mutations_skips_local_variable():
-    source = (
-        "def func() -> None:\n"
-        "    x = 10\n"
-        "    x = x + 1\n"
-    )
+    source = "def func() -> None:\n    x = 10\n    x = x + 1\n"
     issues = ds.check_scope_mutations(_parse(source), Path("f.py"), "pkg")
     assert issues == []
 
 
 def test_check_scope_mutations_clean_when_no_global():
-    source = (
-        "def func(a: int) -> int:\n"
-        "    result = a * 2\n"
-        "    return result\n"
-    )
+    source = "def func(a: int) -> int:\n    result = a * 2\n    return result\n"
     issues = ds.check_scope_mutations(_parse(source), Path("f.py"), "pkg")
     assert issues == []
 
@@ -1285,8 +1241,7 @@ def test_check_sync_async_twins_detects_pair(tmp_path: Path):
         "    return post_process(result)\n"
     ) * 3
     (pkg_dir / "a.py").write_text(
-        f"def load() -> object:\n{body}"
-        f"async def aload() -> object:\n{body}"
+        f"def load() -> object:\n{body}async def aload() -> object:\n{body}"
     )
     pkg_name = "twin_pkg"
 
@@ -1325,9 +1280,7 @@ def test_check_sync_async_twins_skips_different_bodies(tmp_path: Path):
 def test_check_sync_async_twins_skips_short_functions(tmp_path: Path):
     pkg_dir = tmp_path / "short_pkg"
     pkg_dir.mkdir()
-    (pkg_dir / "a.py").write_text(
-        "def f():\n    pass\nasync def af():\n    pass\n"
-    )
+    (pkg_dir / "a.py").write_text("def f():\n    pass\nasync def af():\n    pass\n")
     pkg_name = "short_pkg"
 
     files = []
@@ -1372,11 +1325,7 @@ def test_suppression_suppresses_sync_async_twin(tmp_path: Path):
 
 
 def test_check_dead_code_flags_after_return():
-    source = (
-        "def f():\n"
-        "    return 1\n"
-        "    x = 2\n"
-    )
+    source = "def f():\n    return 1\n    x = 2\n"
     issues = ds.check_dead_code(_parse(source), Path("f.py"), "pkg")
     assert len(issues) == 1
     assert issues[0].rule == "dead-code"
@@ -1385,81 +1334,48 @@ def test_check_dead_code_flags_after_return():
 
 
 def test_check_dead_code_flags_after_raise():
-    source = (
-        "def f():\n"
-        "    raise ValueError('bad')\n"
-        "    x = 2\n"
-    )
+    source = "def f():\n    raise ValueError('bad')\n    x = 2\n"
     issues = ds.check_dead_code(_parse(source), Path("f.py"), "pkg")
     assert len(issues) == 1
     assert issues[0].rule == "dead-code"
 
 
 def test_check_dead_code_flags_after_break():
-    source = (
-        "def f():\n"
-        "    for i in range(10):\n"
-        "        break\n"
-        "        x = i\n"
-    )
+    source = "def f():\n    for i in range(10):\n        break\n        x = i\n"
     issues = ds.check_dead_code(_parse(source), Path("f.py"), "pkg")
     assert len(issues) == 1
     assert issues[0].rule == "dead-code"
 
 
 def test_check_dead_code_flags_after_continue():
-    source = (
-        "def f():\n"
-        "    for i in range(10):\n"
-        "        continue\n"
-        "        x = i\n"
-    )
+    source = "def f():\n    for i in range(10):\n        continue\n        x = i\n"
     issues = ds.check_dead_code(_parse(source), Path("f.py"), "pkg")
     assert len(issues) == 1
     assert issues[0].rule == "dead-code"
 
 
 def test_check_dead_code_flags_multiple_lines_after_return():
-    source = (
-        "def f():\n"
-        "    return\n"
-        "    x = 2\n"
-        "    y = 3\n"
-    )
+    source = "def f():\n    return\n    x = 2\n    y = 3\n"
     issues = ds.check_dead_code(_parse(source), Path("f.py"), "pkg")
     assert len(issues) == 2
     assert all(i.rule == "dead-code" for i in issues)
 
 
 def test_check_dead_code_no_flag_when_no_terminator():
-    source = (
-        "def f():\n"
-        "    x = 1\n"
-        "    y = 2\n"
-        "    return x + y\n"
-    )
+    source = "def f():\n    x = 1\n    y = 2\n    return x + y\n"
     issues = ds.check_dead_code(_parse(source), Path("f.py"), "pkg")
     assert issues == []
 
 
 def test_check_dead_code_flags_in_if_body():
-    source = (
-        "def f():\n"
-        "    if True:\n"
-        "        return\n"
-        "        x = 1\n"
-    )
+    source = "def f():\n    if True:\n        return\n        x = 1\n"
     issues = ds.check_dead_code(_parse(source), Path("f.py"), "pkg")
     assert len(issues) == 1
 
 
 def test_check_dead_code_no_flag_for_class_body():
     # Dead code detection only runs inside function bodies, not class bodies
-    source = (
-        "class C:\n"
-        "    return 1\n"
-        "    x = 2\n"
-    )
+    source = "class C:\n    return 1\n    x = 2\n"
     issues = ds.check_dead_code(_parse(source), Path("f.py"), "pkg")
     assert issues == []
 
@@ -1468,10 +1384,7 @@ def test_check_dead_code_no_flag_for_class_body():
 
 
 def test_check_message_chains_flags_deep_chain():
-    source = (
-        "def f():\n"
-        "    a.b().c().d().e()\n"
-    )
+    source = "def f():\n    a.b().c().d().e()\n"
     issues = ds.check_message_chains(_parse(source), Path("f.py"), "pkg")
     assert len(issues) == 1
     assert issues[0].rule == "message-chain"
@@ -1480,29 +1393,20 @@ def test_check_message_chains_flags_deep_chain():
 
 
 def test_check_message_chains_allows_short_chain():
-    source = (
-        "def f():\n"
-        "    a.b().c()\n"
-    )
+    source = "def f():\n    a.b().c()\n"
     issues = ds.check_message_chains(_parse(source), Path("f.py"), "pkg")
     assert issues == []
 
 
 def test_check_message_chains_flags_deep_attr_chain():
-    source = (
-        "def f():\n"
-        "    a.b.c.d.e\n"
-    )
+    source = "def f():\n    a.b.c.d.e\n"
     issues = ds.check_message_chains(_parse(source), Path("f.py"), "pkg")
     assert len(issues) == 1
     assert issues[0].rule == "message-chain"
 
 
 def test_check_message_chains_allows_single_attr():
-    source = (
-        "def f():\n"
-        "    a.b\n"
-    )
+    source = "def f():\n    a.b\n"
     issues = ds.check_message_chains(_parse(source), Path("f.py"), "pkg")
     assert issues == []
 
@@ -1511,14 +1415,7 @@ def test_check_message_chains_allows_single_attr():
 
 
 def test_check_excessive_decorators_flags_many_decorators():
-    source = (
-        "@d1\n"
-        "@d2\n"
-        "@d3\n"
-        "@d4\n"
-        "def f():\n"
-        "    pass\n"
-    )
+    source = "@d1\n@d2\n@d3\n@d4\ndef f():\n    pass\n"
     issues = ds.check_excessive_decorators(_parse(source), Path("f.py"), "pkg")
     assert len(issues) == 1
     assert issues[0].rule == "excessive-decorators"
@@ -1527,36 +1424,20 @@ def test_check_excessive_decorators_flags_many_decorators():
 
 
 def test_check_excessive_decorators_allows_three_decorators():
-    source = (
-        "@d1\n"
-        "@d2\n"
-        "@d3\n"
-        "def f():\n"
-        "    pass\n"
-    )
+    source = "@d1\n@d2\n@d3\ndef f():\n    pass\n"
     issues = ds.check_excessive_decorators(_parse(source), Path("f.py"), "pkg")
     assert issues == []
 
 
 def test_check_excessive_decorators_flags_class():
-    source = (
-        "@d1\n"
-        "@d2\n"
-        "@d3\n"
-        "@d4\n"
-        "class C:\n"
-        "    pass\n"
-    )
+    source = "@d1\n@d2\n@d3\n@d4\nclass C:\n    pass\n"
     issues = ds.check_excessive_decorators(_parse(source), Path("f.py"), "pkg")
     assert len(issues) == 1
     assert "class" in issues[0].message
 
 
 def test_check_excessive_decorators_no_decorator():
-    source = (
-        "def f():\n"
-        "    pass\n"
-    )
+    source = "def f():\n    pass\n"
     issues = ds.check_excessive_decorators(_parse(source), Path("f.py"), "pkg")
     assert issues == []
 
@@ -1565,10 +1446,7 @@ def test_check_excessive_decorators_no_decorator():
 
 
 def test_check_magic_numbers_flags_literal():
-    source = (
-        "def f():\n"
-        "    x = 42\n"
-    )
+    source = "def f():\n    x = 42\n"
     issues = ds.check_magic_numbers(_parse(source), Path("f.py"), "pkg")
     assert len(issues) == 1
     assert issues[0].rule == "magic-number"
@@ -1577,41 +1455,26 @@ def test_check_magic_numbers_flags_literal():
 
 
 def test_check_magic_numbers_allows_zero_one_minus_one():
-    source = (
-        "def f():\n"
-        "    a = 0\n"
-        "    b = 1\n"
-        "    c = -1\n"
-    )
+    source = "def f():\n    a = 0\n    b = 1\n    c = -1\n"
     issues = ds.check_magic_numbers(_parse(source), Path("f.py"), "pkg")
     assert issues == []
 
 
 def test_check_magic_numbers_skips_init():
-    source = (
-        "class C:\n"
-        "    def __init__(self):\n"
-        "        self.x = 42\n"
-    )
+    source = "class C:\n    def __init__(self):\n        self.x = 42\n"
     issues = ds.check_magic_numbers(_parse(source), Path("f.py"), "pkg")
     assert issues == []
 
 
 def test_check_magic_numbers_flags_float():
-    source = (
-        "def f():\n"
-        "    ratio = 0.75\n"
-    )
+    source = "def f():\n    ratio = 0.75\n"
     issues = ds.check_magic_numbers(_parse(source), Path("f.py"), "pkg")
     assert len(issues) == 1
     assert issues[0].rule == "magic-number"
 
 
 def test_check_magic_numbers_no_flag_in_string():
-    source = (
-        "def f():\n"
-        "    x = '42'\n"
-    )
+    source = "def f():\n    x = '42'\n"
     issues = ds.check_magic_numbers(_parse(source), Path("f.py"), "pkg")
     assert issues == []
 
@@ -1620,12 +1483,7 @@ def test_check_magic_numbers_no_flag_in_string():
 
 
 def test_check_missing_else_flags_nontrivial_if():
-    source = (
-        "def f():\n"
-        "    if x:\n"
-        "        a = 1\n"
-        "        b = 2\n"
-    )
+    source = "def f():\n    if x:\n        a = 1\n        b = 2\n"
     issues = ds.check_missing_else(_parse(source), Path("f.py"), "pkg")
     assert len(issues) == 1
     assert issues[0].rule == "missing-else"
@@ -1633,37 +1491,19 @@ def test_check_missing_else_flags_nontrivial_if():
 
 
 def test_check_missing_else_allows_if_else():
-    source = (
-        "def f():\n"
-        "    if x:\n"
-        "        a = 1\n"
-        "        b = 2\n"
-        "    else:\n"
-        "        pass\n"
-    )
+    source = "def f():\n    if x:\n        a = 1\n        b = 2\n    else:\n        pass\n"
     issues = ds.check_missing_else(_parse(source), Path("f.py"), "pkg")
     assert issues == []
 
 
 def test_check_missing_else_allows_single_statement_if():
-    source = (
-        "def f():\n"
-        "    if x:\n"
-        "        a = 1\n"
-    )
+    source = "def f():\n    if x:\n        a = 1\n"
     issues = ds.check_missing_else(_parse(source), Path("f.py"), "pkg")
     assert issues == []
 
 
 def test_check_missing_else_allows_if_elif():
-    source = (
-        "def f():\n"
-        "    if x:\n"
-        "        a = 1\n"
-        "        b = 2\n"
-        "    elif y:\n"
-        "        pass\n"
-    )
+    source = "def f():\n    if x:\n        a = 1\n        b = 2\n    elif y:\n        pass\n"
     issues = ds.check_missing_else(_parse(source), Path("f.py"), "pkg")
     assert issues == []
 
@@ -1672,10 +1512,7 @@ def test_check_missing_else_allows_if_elif():
 
 
 def test_check_lazy_class_flags_zero_methods():
-    source = (
-        "class C:\n"
-        "    x = 1\n"
-    )
+    source = "class C:\n    x = 1\n"
     issues = ds.check_lazy_class(_parse(source), Path("f.py"), "pkg")
     assert len(issues) == 1
     assert issues[0].rule == "lazy-class"
@@ -1684,11 +1521,7 @@ def test_check_lazy_class_flags_zero_methods():
 
 
 def test_check_lazy_class_flags_one_method():
-    source = (
-        "class C:\n"
-        "    def f(self):\n"
-        "        pass\n"
-    )
+    source = "class C:\n    def f(self):\n        pass\n"
     issues = ds.check_lazy_class(_parse(source), Path("f.py"), "pkg")
     assert len(issues) == 1
     assert issues[0].rule == "lazy-class"
@@ -1696,22 +1529,13 @@ def test_check_lazy_class_flags_one_method():
 
 
 def test_check_lazy_class_allows_two_methods():
-    source = (
-        "class C:\n"
-        "    def f(self):\n"
-        "        pass\n"
-        "    def g(self):\n"
-        "        pass\n"
-    )
+    source = "class C:\n    def f(self):\n        pass\n    def g(self):\n        pass\n"
     issues = ds.check_lazy_class(_parse(source), Path("f.py"), "pkg")
     assert issues == []
 
 
 def test_check_lazy_class_allows_non_class():
-    source = (
-        "def f():\n"
-        "    pass\n"
-    )
+    source = "def f():\n    pass\n"
     issues = ds.check_lazy_class(_parse(source), Path("f.py"), "pkg")
     assert issues == []
 
@@ -1739,32 +1563,19 @@ def test_check_deep_inheritance_flags_three_level_chain():
 
 
 def test_check_deep_inheritance_allows_shallow():
-    source = (
-        "class A:\n"
-        "    pass\n"
-        "class B(A):\n"
-        "    pass\n"
-    )
+    source = "class A:\n    pass\nclass B(A):\n    pass\n"
     issues = ds.check_deep_inheritance(_parse(source), Path("f.py"), "pkg")
     assert issues == []
 
 
 def test_check_deep_inheritance_no_bases():
-    source = (
-        "class C:\n"
-        "    pass\n"
-    )
+    source = "class C:\n    pass\n"
     issues = ds.check_deep_inheritance(_parse(source), Path("f.py"), "pkg")
     assert issues == []
 
 
 def test_check_deep_inheritance_allows_single_level():
-    source = (
-        "class Base:\n"
-        "    pass\n"
-        "class Child(Base):\n"
-        "    pass\n"
-    )
+    source = "class Base:\n    pass\nclass Child(Base):\n    pass\n"
     issues = ds.check_deep_inheritance(_parse(source), Path("f.py"), "pkg")
     assert issues == []
 
@@ -1872,8 +1683,7 @@ def test_plan_report_groups_files():
 
 def test_plan_report_truncates_by_top():
     issues = [
-        ds.Issue(Path(f"file{i}.py"), 1, "info", f"rule-{i}", "msg", "pkg")
-        for i in range(30)
+        ds.Issue(Path(f"file{i}.py"), 1, "info", f"rule-{i}", "msg", "pkg") for i in range(30)
     ]
     report = ds.plan_report(issues, top=5)
     assert "and 25 more rules" in report

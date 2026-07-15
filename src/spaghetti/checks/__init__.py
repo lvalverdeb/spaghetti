@@ -1,4 +1,5 @@
 """Check registries: ALL_CHECKS, SOURCE_CHECKS, PACKAGE_CHECKS."""
+
 from __future__ import annotations
 
 import ast

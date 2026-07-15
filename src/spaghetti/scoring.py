@@ -1,4 +1,5 @@
 """Health scoring and remediation planning."""
+
 from __future__ import annotations
 
 from collections import defaultdict
@@ -161,13 +162,9 @@ def plan_report(issues: list[Issue], *, top: int = 20) -> str:
     lines.append("")
 
     lines.append(
-        f"  {'#':<3} {'Pri':<4} {'Rule':<30} {'Sev':<4} {'Effort':<9} "
-        f"{'Issues':>6}  {'Score':>5}"
+        f"  {'#':<3} {'Pri':<4} {'Rule':<30} {'Sev':<4} {'Effort':<9} {'Issues':>6}  {'Score':>5}"
     )
-    lines.append(
-        f"  {'─' * 3} {'─' * 4} {'─' * 30} {'─' * 4} {'─' * 9} "
-        f"{'─' * 6}  {'─' * 5}"
-    )
+    lines.append(f"  {'─' * 3} {'─' * 4} {'─' * 30} {'─' * 4} {'─' * 9} {'─' * 6}  {'─' * 5}")
 
     shown = steps[:top]
     for idx, step in enumerate(shown, 1):

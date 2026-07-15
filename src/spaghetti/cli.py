@@ -1,4 +1,5 @@
 """CLI entry point for the spaghetti detector."""
+
 from __future__ import annotations
 
 import argparse
@@ -248,9 +249,7 @@ def _render_text_report(
     print(f"    Warnings:        {sum(1 for i in filtered if i.severity == 'warning')}")
     print(f"    Info:            {sum(1 for i in filtered if i.severity == 'info')}")
     if total_result.suppressed:
-        print(
-            f"  Suppressed:        {total_result.suppressed} (inline spaghetti-ignore markers)"
-        )
+        print(f"  Suppressed:        {total_result.suppressed} (inline spaghetti-ignore markers)")
     print()
 
     # ── PACKAGE HEALTH SCORECARD ─────────────────────────────────────────────
@@ -258,9 +257,7 @@ def _render_text_report(
     print("  PACKAGE HEALTH SCORECARD")
     print("=" * 72)
     print()
-    print(
-        f"  {'Package':<16} {'Grade':>5} {'Score':>7}  {'Files':>6} {'KLOC':>6} {'Issues':>7}"
-    )
+    print(f"  {'Package':<16} {'Grade':>5} {'Score':>7}  {'Files':>6} {'KLOC':>6} {'Issues':>7}")
     print(f"  {'─' * 16} {'─' * 5} {'─' * 7}  {'─' * 6} {'─' * 6} {'─' * 7}")
     for pkg_name in args.packages:
         result = per_package[pkg_name]
@@ -347,9 +344,7 @@ def _render_text_report(
         infos = sum(1 for i in pkg_issues if i.severity == "info")
 
         status = "✖" if errors > 0 else "⚠" if warnings > 0 else "✓"
-        print(
-            f"  {status} {pkg_name}: {len(pkg_issues)} issues ({errors}E {warnings}W {infos}I)"
-        )
+        print(f"  {status} {pkg_name}: {len(pkg_issues)} issues ({errors}E {warnings}W {infos}I)")
         print("-" * 72)
 
         pkg_files: dict[str, list[Issue]] = defaultdict(list)
@@ -385,9 +380,7 @@ def _render_text_report(
     print(f"  {'─' * 30} {'─' * 5} {'─' * 3} {'─' * 3} {'─' * 3}")
     for rule_name, count in sorted(rule_counts.items(), key=lambda x: -x[1]):
         rs = rule_by_severity[rule_name]
-        print(
-            f"  {rule_name:<30} {count:>5} {rs['error']:>3} {rs['warning']:>3} {rs['info']:>3}"
-        )
+        print(f"  {rule_name:<30} {count:>5} {rs['error']:>3} {rs['warning']:>3} {rs['info']:>3}")
     print()
 
 
