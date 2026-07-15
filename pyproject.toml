@@ -1,6 +1,6 @@
 [project]
 name = "spaghetti-detector"
-version = "0.1.1"
+version = "1.0.1"
 description = "Spaghetti-code and architectural-smell detector for Python projects"
 readme = "README.md"
 license = "MIT"
