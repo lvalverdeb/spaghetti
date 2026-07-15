@@ -13,6 +13,8 @@ def _display_path(path: Path) -> str:
     """Workspace-relative path when possible, absolute otherwise."""
     from spaghetti.config import WORKSPACE_ROOT
 
+    if WORKSPACE_ROOT is None:
+        return str(path)
     try:
         return str(path.relative_to(WORKSPACE_ROOT))
     except ValueError:

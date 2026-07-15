@@ -34,6 +34,29 @@ def _parse(source: str) -> ast.Module:
     return ast.parse(source)
 
 
+# ── Workspace root discovery ─────────────────────────────────────────────────
+
+
+def test_find_workspace_root_returns_none_when_absent(tmp_path):
+    # Regression test: this used to be a hard RuntimeError raised at import
+    # time, which broke importing spaghetti.config (and therefore
+    # spaghetti.detector, and this whole test module) in any standalone
+    # checkout with no ancestor [tool.uv.workspace] — exactly what
+    # spaghetti's own GitHub Actions checkout looks like.
+    from spaghetti.config import _find_workspace_root
+
+    assert _find_workspace_root(tmp_path) is None
+
+
+def test_find_workspace_root_finds_ancestor_workspace_marker(tmp_path):
+    from spaghetti.config import _find_workspace_root
+
+    (tmp_path / "pyproject.toml").write_text("[tool.uv.workspace]\nmembers = []\n")
+    nested = tmp_path / "a" / "b"
+    nested.mkdir(parents=True)
+    assert _find_workspace_root(nested) == tmp_path
+
+
 # ── Representative check functions ──────────────────────────────────────────
 
 

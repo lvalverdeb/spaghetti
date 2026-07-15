@@ -11,8 +11,17 @@ from pathlib import Path
 # ── Workspace root discovery ──────────────────────────────────────────────────
 
 
-def _find_workspace_root(start: Path) -> Path:
-    """Walk upward from ``start`` for the ``pyproject.toml`` declaring the uv workspace."""
+def _find_workspace_root(start: Path) -> Path | None:
+    """Walk upward from ``start`` for the ``pyproject.toml`` declaring the uv workspace.
+
+    Returns ``None`` rather than raising when no such ancestor exists —
+    spaghetti is pip-installable and importable standalone (e.g. in this
+    package's own standalone CI checkout, which has no sibling ``boti``/etc.
+    directories and no ambient workspace at all), and a bare import must not
+    crash. Callers fall back to an empty default package registry in that
+    case; the CLI already requires an explicit ``--config``/``--package`` or
+    errors out when the resolved registry is empty.
+    """
     for candidate in (start, *start.parents):
         pyproject = candidate / "pyproject.toml"
         if not pyproject.is_file():
@@ -23,22 +32,23 @@ def _find_workspace_root(start: Path) -> Path:
             continue
         if "workspace" in data.get("tool", {}).get("uv", {}):
             return candidate
-    raise RuntimeError(
-        f"Could not locate the workspace root (a pyproject.toml with "
-        f"[tool.uv.workspace]) above {start}."
-    )
+    return None
 
 
-WORKSPACE_ROOT = _find_workspace_root(Path(__file__).resolve().parent)
+WORKSPACE_ROOT: Path | None = _find_workspace_root(Path(__file__).resolve().parent)
 
 # ── Package registry ──────────────────────────────────────────────────────────
 
-DEFAULT_PACKAGES: dict[str, Path] = {
-    "boti": WORKSPACE_ROOT / "boti" / "src" / "boti",
-    "boti-data": WORKSPACE_ROOT / "boti-data" / "src" / "boti_data",
-    "boti-dask": WORKSPACE_ROOT / "boti-dask" / "src" / "boti_dask",
-    "spaghetti": WORKSPACE_ROOT / "spaghetti" / "src" / "spaghetti",
-}
+DEFAULT_PACKAGES: dict[str, Path] = (
+    {
+        "boti": WORKSPACE_ROOT / "boti" / "src" / "boti",
+        "boti-data": WORKSPACE_ROOT / "boti-data" / "src" / "boti_data",
+        "boti-dask": WORKSPACE_ROOT / "boti-dask" / "src" / "boti_dask",
+        "spaghetti": WORKSPACE_ROOT / "spaghetti" / "src" / "spaghetti",
+    }
+    if WORKSPACE_ROOT is not None
+    else {}
+)
 
 PACKAGES: dict[str, Path] = dict(DEFAULT_PACKAGES)
 
