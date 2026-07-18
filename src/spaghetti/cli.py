@@ -168,6 +168,19 @@ def main() -> int:
             f"unknown package(s): {', '.join(unknown)}. Available: {', '.join(sorted(_det.PACKAGES))}"
         )
 
+    # A resolved-but-nonexistent path (e.g. a --package NAME=PATH typo, or a
+    # relative PATH resolved against the wrong cwd) must not be confused
+    # with "scanned and found nothing wrong": scan_package() silently
+    # returns an empty ScanResult for a missing path, which without this
+    # check reports a perfect A/100.0 grade — indistinguishable from a
+    # genuinely clean package — for a package that was never actually
+    # scanned at all.
+    missing = [p for p in args.packages if not _det.PACKAGES[p].exists()]
+    if missing:
+        parser.error(
+            "package path(s) do not exist: " + ", ".join(f"{p}={_det.PACKAGES[p]}" for p in missing)
+        )
+
     severity_order = {"info": 0, "warning": 1, "error": 2}
     min_severity = severity_order[args.severity]
 

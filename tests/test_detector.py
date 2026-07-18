@@ -590,6 +590,31 @@ def test_main_errors_on_unknown_package_name(fake_package: Path, monkeypatch: py
         ds.main()
 
 
+def test_main_errors_on_nonexistent_package_path(
+    fake_package: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+):
+    """Regression test: a --package NAME=PATH pointing at a path that doesn't
+    exist (e.g. a typo, or a relative PATH resolved against the wrong cwd —
+    the real-world case that surfaced this: `--package boti-dask=src/boti_dask`
+    run from the workspace root instead of from inside boti-dask/) used to
+    scan silently to an empty, "clean" 0-issues/grade-A result instead of
+    erroring — indistinguishable from a genuinely clean package that actually
+    got scanned.
+    """
+    missing_path = fake_package / "does-not-exist-on-disk"
+    monkeypatch.setattr(ds, "PACKAGES", dict(ds.PACKAGES))  # restore after test
+    monkeypatch.setattr(
+        "sys.argv",
+        ["spaghetti", "--package", f"fake_pkg={missing_path}", "--severity", "info"],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        ds.main()
+
+    assert exc_info.value.code == 2
+    assert "package path(s) do not exist" in capsys.readouterr().err
+
+
 # ── High Complexity ──────────────────────────────────────────────────────────
 
 
