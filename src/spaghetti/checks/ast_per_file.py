@@ -796,13 +796,21 @@ def check_scope_mutations(tree: ast.Module, filepath: Path, pkg: str) -> list[Is
 # ── Gap-Analysis Rules ────────────────────────────────────────────────────────
 
 
+# Statement types that unconditionally terminate the control flow of the
+# block they're in — used by both check_dead_code (what follows one of these
+# is unreachable) and check_missing_else (an `if` body ending in one of these
+# needs no explicit negative path: it's either "the rest of the function" or
+# "the next loop iteration").
+_CONTROL_FLOW_TERMINAL_STMT_TYPES = (ast.Return, ast.Raise, ast.Break, ast.Continue)
+
+
 def check_dead_code(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
     """Flag statements that are guaranteed unreachable because they follow
     ``return``, ``raise``, ``break``, or ``continue``."""
     issues: list[Issue] = []
 
     def _unreachable_after(stmt: ast.stmt) -> bool:
-        return isinstance(stmt, (ast.Return, ast.Raise, ast.Break, ast.Continue))
+        return isinstance(stmt, _CONTROL_FLOW_TERMINAL_STMT_TYPES)
 
     def _scan_body(body: list[ast.stmt]) -> None:
         for i, stmt in enumerate(body):
@@ -923,7 +931,13 @@ def check_magic_numbers(tree: ast.Module, filepath: Path, pkg: str) -> list[Issu
 
 
 def check_missing_else(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
-    """Flag ``if`` blocks with 2+ statements but no ``else``/``elif``."""
+    """Flag ``if`` blocks with 2+ statements but no ``else``/``elif``.
+
+    Skipped when the ``if`` body's last statement already terminates control
+    flow (``return``/``raise``/``continue``/``break``): the negative path is
+    either "the rest of the function" or "the next loop iteration", and is
+    not missing.
+    """
     issues: list[Issue] = []
     _NON_TRIVIAL_BODY_THRESHOLD = 2
 
@@ -932,17 +946,20 @@ def check_missing_else(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue
             continue
         if node.orelse:
             continue
-        if len(node.body) >= _NON_TRIVIAL_BODY_THRESHOLD:
-            issues.append(
-                Issue(
-                    file=filepath,
-                    line=node.lineno,
-                    severity="info",
-                    rule="missing-else",
-                    package=pkg,
-                    message=f"'if' block has {len(node.body)} statements but no else/elif — missing the negative path",
-                )
+        if len(node.body) < _NON_TRIVIAL_BODY_THRESHOLD:
+            continue
+        if isinstance(node.body[-1], _CONTROL_FLOW_TERMINAL_STMT_TYPES):
+            continue
+        issues.append(
+            Issue(
+                file=filepath,
+                line=node.lineno,
+                severity="info",
+                rule="missing-else",
+                package=pkg,
+                message=f"'if' block has {len(node.body)} statements but no else/elif — missing the negative path",
             )
+        )
 
     return issues
 

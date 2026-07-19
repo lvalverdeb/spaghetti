@@ -1556,6 +1556,36 @@ def test_check_missing_else_allows_if_elif():
     assert issues == []
 
 
+def test_check_missing_else_allows_guard_clause_return():
+    source = "def f():\n    if x:\n        a = 1\n        return\n    return a\n"
+    assert ds.check_missing_else(_parse(source), Path("f.py"), "pkg") == []
+
+
+def test_check_missing_else_allows_guard_clause_raise():
+    source = "def f():\n    if x:\n        a = 1\n        raise ValueError(a)\n"
+    assert ds.check_missing_else(_parse(source), Path("f.py"), "pkg") == []
+
+
+def test_check_missing_else_allows_loop_skip_continue():
+    source = "def f():\n    for x in y:\n        if x in seen:\n            a = 1\n            continue\n"
+    assert ds.check_missing_else(_parse(source), Path("f.py"), "pkg") == []
+
+
+def test_check_missing_else_allows_loop_skip_break():
+    source = (
+        "def f():\n    for x in y:\n        if x is done:\n            a = 1\n            break\n"
+    )
+    assert ds.check_missing_else(_parse(source), Path("f.py"), "pkg") == []
+
+
+def test_check_missing_else_still_flags_non_terminated_if():
+    # Sanity check: the terminator narrowing must not swallow genuine hits —
+    # a 2+ statement if with no else/elif/terminator is still flagged.
+    source = "def f():\n    if x:\n        a = 1\n        b = 2\n    return a + b\n"
+    issues = ds.check_missing_else(_parse(source), Path("f.py"), "pkg")
+    assert len(issues) == 1
+
+
 # ── Rule: lazy-class ────────────────────────────────────────────────────────
 
 
