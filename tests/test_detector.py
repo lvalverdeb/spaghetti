@@ -1618,6 +1618,44 @@ def test_check_lazy_class_allows_non_class():
     assert issues == []
 
 
+def test_check_lazy_class_allows_pydantic_base_model():
+    source = "class C(BaseModel):\n    x: int = 1\n"
+    issues = ds.check_lazy_class(_parse(source), Path("f.py"), "pkg")
+    assert issues == []
+
+
+def test_check_lazy_class_allows_pydantic_base_model_qualified():
+    source = "class C(pydantic.BaseModel):\n    x: int = 1\n"
+    issues = ds.check_lazy_class(_parse(source), Path("f.py"), "pkg")
+    assert issues == []
+
+
+def test_check_lazy_class_allows_pydantic_base_settings():
+    source = "class C(BaseSettings):\n    x: int = 1\n"
+    issues = ds.check_lazy_class(_parse(source), Path("f.py"), "pkg")
+    assert issues == []
+
+
+def test_check_lazy_class_allows_dataclass_decorator():
+    source = "@dataclass\nclass C:\n    x: int = 1\n"
+    issues = ds.check_lazy_class(_parse(source), Path("f.py"), "pkg")
+    assert issues == []
+
+
+def test_check_lazy_class_allows_dataclass_decorator_with_args():
+    source = "@dataclass(frozen=True)\nclass C:\n    x: int = 1\n"
+    issues = ds.check_lazy_class(_parse(source), Path("f.py"), "pkg")
+    assert issues == []
+
+
+def test_check_lazy_class_still_flags_unrelated_base():
+    # Sanity check: the pydantic/dataclass exemption must not swallow
+    # genuine hits — an unrelated base class doesn't grant an exemption.
+    source = "class C(SomeOtherBase):\n    x = 1\n"
+    issues = ds.check_lazy_class(_parse(source), Path("f.py"), "pkg")
+    assert len(issues) == 1
+
+
 # ── Rule: deep-inheritance ──────────────────────────────────────────────────
 
 

@@ -964,11 +964,50 @@ def check_missing_else(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue
     return issues
 
 
+# Base class names (matched by their final ast.Name/ast.Attribute component,
+# not a resolved import) that already make a class a declarative data
+# container — flagging them as "lazy" and suggesting "@dataclass" is
+# nonsensical since they already fulfill that exact role.
+_LAZY_CLASS_EXEMPT_BASE_NAMES = frozenset({"BaseModel", "BaseSettings"})
+
+
+def _lazy_class_decorator_target_name(dec: ast.expr) -> str | None:
+    """The name a decorator resolves to, e.g. 'dataclass' for both
+    ``@dataclass`` and ``@dataclass(frozen=True)``."""
+    target = dec.func if isinstance(dec, ast.Call) else dec
+    if isinstance(target, ast.Name):
+        return target.id
+    if isinstance(target, ast.Attribute):
+        return target.attr
+    return None
+
+
+def _lazy_class_is_exempt(node: ast.ClassDef) -> bool:
+    """True if *node* already is a declarative data container.
+
+    Pydantic ``BaseModel``/``BaseSettings`` subclasses and
+    ``@dataclass``-decorated classes already satisfy check_lazy_class's own
+    suggested remedy, so they should never be flagged regardless of method
+    count.
+    """
+    for base in node.bases:
+        name = base.id if isinstance(base, ast.Name) else getattr(base, "attr", None)
+        if name in _LAZY_CLASS_EXEMPT_BASE_NAMES:
+            return True
+    return any(_lazy_class_decorator_target_name(dec) == "dataclass" for dec in node.decorator_list)
+
+
 def check_lazy_class(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
-    """Flag classes with fewer than 2 methods."""
+    """Flag classes with fewer than 2 methods.
+
+    Skipped for classes that already are declarative data containers — see
+    ``_lazy_class_is_exempt``.
+    """
     issues: list[Issue] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.ClassDef):
+            continue
+        if _lazy_class_is_exempt(node):
             continue
         methods = [n for n in node.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
         if len(methods) < 2:
