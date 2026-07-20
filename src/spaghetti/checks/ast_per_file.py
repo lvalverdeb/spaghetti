@@ -1057,6 +1057,60 @@ def _string_operand(node: ast.expr) -> str | None:
     return None
 
 
+# Fields Python's own `ast` module uses to hold identifier strings: keyword
+# argument names (`keyword.arg`), variable names (`Name.id`), attribute
+# names (`Attribute.attr`). Equality checks against these are AST-shape
+# matching (e.g. `kw.arg == "allow_pickle"` to find a specific call
+# signature), not the stringly-typed business logic this rule targets —
+# excluding them avoids false positives in any AST-walking tool comparing
+# against known field/argument names.
+_AST_IDENTIFIER_FIELDS = frozenset({"arg", "id", "attr"})
+
+
+def _is_ast_identifier_field_access(node: ast.expr) -> bool:
+    return isinstance(node, ast.Attribute) and node.attr in _AST_IDENTIFIER_FIELDS
+
+
+# A dunder name needs at least one character between the double
+# underscores (e.g. `__init__`) — bare underscore runs like `____` are just
+# punctuation, not Python's magic-method vocabulary.
+_MIN_DUNDER_NAME_LENGTH = 4
+
+
+def _is_dunder_name(value: str) -> bool:
+    """True for Python's own magic-method/attribute vocabulary (`__init__`,
+    `__new__`, `__call__`, ...). These are reflection/introspection
+    artifacts, never a business category code, regardless of what
+    attribute holds them — so a comparison like `name == "__init__"` isn't
+    the stringly-typed smell this rule targets, unlike the general `.name`
+    field (too common in ordinary business code to exclude wholesale)."""
+    return len(value) > _MIN_DUNDER_NAME_LENGTH and value.startswith("__") and value.endswith("__")
+
+
+def _is_excluded_magic_string_value(value: str, other_operand: ast.expr) -> bool:
+    """True when this string/other-operand pairing is a known non-business
+    comparison (AST-shape matching or Python's own dunder vocabulary) that
+    check_magic_strings should ignore."""
+    return _is_dunder_name(value) or _is_ast_identifier_field_access(other_operand)
+
+
+def _magic_string_comparison(node: ast.Compare) -> tuple[str, int] | None:
+    """The (value, lineno) pair for *node* if it's a non-excluded
+    `str == <expr>` / `<expr> == str` equality comparison, else None."""
+    if len(node.ops) != 1 or not isinstance(node.ops[0], (ast.Eq, ast.NotEq)):
+        return None
+    left, right = _string_operand(node.left), _string_operand(node.comparators[0])
+    if left is not None and right is None:
+        if _is_excluded_magic_string_value(left, node.comparators[0]):
+            return None
+        return left, node.lineno
+    if right is not None and left is None:
+        if _is_excluded_magic_string_value(right, node.left):
+            return None
+        return right, node.lineno
+    return None
+
+
 def check_magic_strings(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
     """Flag string literals repeatedly compared for equality against a
     variable/expression — a sign the value is being used as an ad-hoc
@@ -1068,13 +1122,9 @@ def check_magic_strings(tree: ast.Module, filepath: Path, pkg: str) -> list[Issu
     for node in ast.walk(tree):
         if not isinstance(node, ast.Compare):
             continue
-        if len(node.ops) != 1 or not isinstance(node.ops[0], (ast.Eq, ast.NotEq)):
-            continue
-        left, right = _string_operand(node.left), _string_operand(node.comparators[0])
-        if left is not None and right is None:
-            comparisons.append((left, node.lineno))
-        elif right is not None and left is None:
-            comparisons.append((right, node.lineno))
+        result = _magic_string_comparison(node)
+        if result is not None:
+            comparisons.append(result)
 
     counts: dict[str, int] = {}
     for value, _ in comparisons:
@@ -1305,6 +1355,47 @@ def check_god_module(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
 # ── Rule: Pass-Through Methods ────────────────────────────────────────────────
 
 
+def _non_docstring_body(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[ast.stmt]:
+    return [
+        stmt
+        for stmt in node.body
+        if not (
+            isinstance(stmt, ast.Expr)
+            and isinstance(stmt.value, ast.Constant)
+            and isinstance(stmt.value.value, str)
+        )
+    ]
+
+
+def _call_from_stmt(stmt: ast.stmt) -> ast.Call | None:
+    """The `ast.Call` a single `return`/expression statement evaluates,
+    unwrapping a single `await` if present, else None."""
+    value: ast.expr | None = None
+    if isinstance(stmt, ast.Return):
+        value = stmt.value
+    elif isinstance(stmt, ast.Expr):
+        value = stmt.value
+    if isinstance(value, ast.Await):
+        value = value.value
+    return value if isinstance(value, ast.Call) else None
+
+
+def _is_super_call(call_node: ast.Call) -> bool:
+    return (
+        isinstance(call_node.func, ast.Attribute)
+        and isinstance(call_node.func.value, ast.Call)
+        and getattr(call_node.func.value.func, "id", "") == "super"
+    )
+
+
+def _is_pure_delegation_call(call_node: ast.Call) -> bool:
+    """True if every argument is forwarded unchanged (a bare name or
+    `*args`/`**kwargs`), not transformed or computed."""
+    if not all(isinstance(a, (ast.Name, ast.Starred)) for a in call_node.args):
+        return False
+    return all(isinstance(k.value, ast.Name) for k in call_node.keywords)
+
+
 def check_pass_through_methods(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
     """Detect methods that do nothing but delegate to another function."""
     issues: list[Issue] = []
@@ -1312,67 +1403,35 @@ def check_pass_through_methods(tree: ast.Module, filepath: Path, pkg: str) -> li
     for node in ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
-
         if node.name.startswith("__") and node.name.endswith("__"):
             continue
 
-        body = [
-            stmt
-            for stmt in node.body
-            if not (
-                isinstance(stmt, ast.Expr)
-                and isinstance(stmt.value, ast.Constant)
-                and isinstance(stmt.value.value, str)
-            )
-        ]
-
+        body = _non_docstring_body(node)
         if len(body) != 1:
             continue
 
-        stmt = body[0]
-
-        call_node = None
-        if isinstance(stmt, ast.Return):
-            if isinstance(stmt.value, ast.Call):
-                call_node = stmt.value
-            elif isinstance(stmt.value, ast.Await) and isinstance(stmt.value.value, ast.Call):
-                call_node = stmt.value.value
-        elif isinstance(stmt, ast.Expr):
-            if isinstance(stmt.value, ast.Call):
-                call_node = stmt.value
-            elif isinstance(stmt.value, ast.Await) and isinstance(stmt.value.value, ast.Call):
-                call_node = stmt.value.value
-
-        if not call_node:
-            continue
-
+        call_node = _call_from_stmt(body[0])
         if (
-            isinstance(call_node.func, ast.Attribute)
-            and isinstance(call_node.func.value, ast.Call)
-            and getattr(call_node.func.value.func, "id", "") == "super"
+            call_node is None
+            or _is_super_call(call_node)
+            or not _is_pure_delegation_call(call_node)
         ):
             continue
 
-        is_pure_delegation = all(isinstance(a, (ast.Name, ast.Starred)) for a in call_node.args)
-
-        if is_pure_delegation:
-            is_pure_delegation = all(isinstance(k.value, ast.Name) for k in call_node.keywords)
-
-        if is_pure_delegation:
-            target = ast.unparse(call_node.func)
-            issues.append(
-                Issue(
-                    file=filepath,
-                    line=node.lineno,
-                    severity="info",
-                    rule="pass-through-method",
-                    package=pkg,
-                    message=(
-                        f"{node.name}() is a pure pass-through to '{target}()'. "
-                        "Consider exposing the underlying object."
-                    ),
-                )
+        target = ast.unparse(call_node.func)
+        issues.append(
+            Issue(
+                file=filepath,
+                line=node.lineno,
+                severity="info",
+                rule="pass-through-method",
+                package=pkg,
+                message=(
+                    f"{node.name}() is a pure pass-through to '{target}()'. "
+                    "Consider exposing the underlying object."
+                ),
             )
+        )
 
     return issues
 

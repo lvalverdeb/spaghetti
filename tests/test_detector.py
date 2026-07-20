@@ -53,6 +53,7 @@ from spaghetti.checks.ast_per_file import (
     check_missing_else,
     check_missing_types,
     check_mutable_defaults,
+    check_pass_through_methods,
     check_scope_mutations,
     check_star_imports,
     check_swallowed_exceptions,
@@ -1752,6 +1753,41 @@ def test_check_magic_strings_flags_literal_on_left_side():
     assert len(issues) == 2
 
 
+def test_check_magic_strings_ignores_ast_identifier_field_access():
+    source = (
+        "def f(kw, t, target):\n"
+        "    if kw.arg == 'allow_pickle':\n"
+        "        pass\n"
+        "    if t.id == 'allow_pickle':\n"
+        "        pass\n"
+        "    if target.attr == 'allow_pickle':\n"
+        "        pass\n"
+    )
+    issues = check_magic_strings(_parse(source), Path("f.py"), "pkg")
+    assert issues == []
+
+
+def test_check_magic_strings_ignores_dunder_name():
+    source = (
+        "def f(name):\n"
+        "    if name == '__init__':\n"
+        "        pass\n"
+        "    if name != '__init__':\n"
+        "        pass\n"
+    )
+    issues = check_magic_strings(_parse(source), Path("f.py"), "pkg")
+    assert issues == []
+
+
+def test_check_magic_strings_still_flags_short_dunder_looking_string():
+    # '____' has no content between the underscores — not a real dunder
+    # name, just four underscores — so it should still be flagged as an
+    # ordinary repeated string comparison.
+    source = "def f(x):\n    if x == '____':\n        pass\n    if x == '____':\n        pass\n"
+    issues = check_magic_strings(_parse(source), Path("f.py"), "pkg")
+    assert len(issues) == 2
+
+
 # ── Rule: missing-else ──────────────────────────────────────────────────────
 
 
@@ -1963,6 +1999,74 @@ def test_check_deep_inheritance_allows_single_level():
     source = "class Base:\n    pass\nclass Child(Base):\n    pass\n"
     issues = check_deep_inheritance(_parse(source), Path("f.py"), "pkg")
     assert issues == []
+
+
+# ── Rule: pass-through-method ─────────────────────────────────────────────────
+
+
+def test_check_pass_through_methods_flags_pure_delegation():
+    source = "class Wrapper:\n    def get(self, key):\n        return self._inner.get(key)\n"
+    issues = check_pass_through_methods(_parse(source), Path("f.py"), "pkg")
+    assert len(issues) == 1
+    assert issues[0].rule == "pass-through-method"
+    assert issues[0].severity == "info"
+    assert "_inner.get()" in issues[0].message
+
+
+def test_check_pass_through_methods_flags_expression_statement_form():
+    source = "class Wrapper:\n    def close(self):\n        self._inner.close()\n"
+    issues = check_pass_through_methods(_parse(source), Path("f.py"), "pkg")
+    assert len(issues) == 1
+
+
+def test_check_pass_through_methods_flags_awaited_call():
+    source = (
+        "class Wrapper:\n    async def get(self, key):\n        return await self._inner.get(key)\n"
+    )
+    issues = check_pass_through_methods(_parse(source), Path("f.py"), "pkg")
+    assert len(issues) == 1
+
+
+def test_check_pass_through_methods_ignores_transformed_args():
+    source = (
+        "class Wrapper:\n    def get(self, key):\n        return self._inner.get(key.upper())\n"
+    )
+    issues = check_pass_through_methods(_parse(source), Path("f.py"), "pkg")
+    assert issues == []
+
+
+def test_check_pass_through_methods_ignores_multi_statement_body():
+    source = (
+        "class Wrapper:\n"
+        "    def get(self, key):\n"
+        "        log(key)\n"
+        "        return self._inner.get(key)\n"
+    )
+    issues = check_pass_through_methods(_parse(source), Path("f.py"), "pkg")
+    assert issues == []
+
+
+def test_check_pass_through_methods_ignores_dunder_methods():
+    source = "class Wrapper:\n    def __init__(self, inner):\n        self._inner = inner\n"
+    issues = check_pass_through_methods(_parse(source), Path("f.py"), "pkg")
+    assert issues == []
+
+
+def test_check_pass_through_methods_ignores_super_call():
+    source = "class Child(Base):\n    def get(self, key):\n        return super().get(key)\n"
+    issues = check_pass_through_methods(_parse(source), Path("f.py"), "pkg")
+    assert issues == []
+
+
+def test_check_pass_through_methods_allows_docstring_only_body_to_still_flag():
+    source = (
+        "class Wrapper:\n"
+        "    def get(self, key):\n"
+        "        '''Docstring.'''\n"
+        "        return self._inner.get(key)\n"
+    )
+    issues = check_pass_through_methods(_parse(source), Path("f.py"), "pkg")
+    assert len(issues) == 1
 
 
 # ── Remediation Priority ────────────────────────────────────────────────────
