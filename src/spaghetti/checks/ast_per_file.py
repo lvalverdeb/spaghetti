@@ -60,7 +60,11 @@ def check_long_functions(tree: ast.Module, filepath: Path, pkg: str) -> list[Iss
                         severity="warning",
                         rule="long-function",
                         package=pkg,
-                        message=f"{node.name}() is {lines} lines (max {MAX_FUNCTION_LINES})",
+                        message=(
+                            f"{node.name}() is {lines} lines (max {MAX_FUNCTION_LINES}) — "
+                            "extract logical chunks into named helper functions (Extract "
+                            "Method)"
+                        ),
                     )
                 )
     return issues
@@ -150,7 +154,11 @@ def check_excessive_params(tree: ast.Module, filepath: Path, pkg: str) -> list[I
                         severity="warning",
                         rule="too-many-params",
                         package=pkg,
-                        message=f"{node.name}() has {total} params (max {MAX_FUNC_PARAMS})",
+                        message=(
+                            f"{node.name}() has {total} params (max {MAX_FUNC_PARAMS}) — "
+                            "consider a Parameter Object (a dataclass or Pydantic model "
+                            "bundling the related fields) instead"
+                        ),
                     )
                 )
     return issues
@@ -173,7 +181,11 @@ def check_excessive_returns(tree: ast.Module, filepath: Path, pkg: str) -> list[
                         severity="info",
                         rule="excessive-returns",
                         package=pkg,
-                        message=f"{node.name}() has {n_returns} return statements (max {MAX_RETURNS})",
+                        message=(
+                            f"{node.name}() has {n_returns} return statements "
+                            f"(max {MAX_RETURNS}) — consider a Return Object bundling the "
+                            "result and building it up to a single return"
+                        ),
                     )
                 )
     return issues
@@ -214,7 +226,9 @@ def check_boolean_flag_params(tree: ast.Module, filepath: Path, pkg: str) -> lis
                         package=pkg,
                         message=(
                             f"{node.name}() has {len(flags)} boolean flag params "
-                            f"({', '.join(flags)}) — combinations multiply branching"
+                            f"({', '.join(flags)}) — combinations multiply branching; "
+                            "consider the Strategy pattern (inject the varying behavior "
+                            "as an object) instead of flag-branching for it"
                         ),
                     )
                 )
@@ -237,7 +251,11 @@ def check_deep_nesting(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue
                         severity="warning",
                         rule="deep-nesting",
                         package=pkg,
-                        message=f"{node.name}() has nesting depth {depth} (max {MAX_NESTING_DEPTH})",
+                        message=(
+                            f"{node.name}() has nesting depth {depth} (max {MAX_NESTING_DEPTH}) "
+                            "— use guard clauses (invert the condition, exit early) to keep "
+                            "the happy path unindented"
+                        ),
                     )
                 )
     return issues
@@ -295,7 +313,11 @@ def check_untyped_dicts(tree: ast.Module, filepath: Path, pkg: str) -> list[Issu
                         severity="info",
                         rule="untyped-dict",
                         package=pkg,
-                        message="Bare 'dict' used in type hint — use dict[str, Any] or similar",
+                        message=(
+                            "Bare 'dict' used in type hint — use dict[str, Any] or similar, "
+                            "a dataclass/Pydantic model (a DTO) if the shape is fixed, or "
+                            "typing.TypedDict if it must stay a plain dict at runtime"
+                        ),
                     )
                 )
 
@@ -610,7 +632,14 @@ def check_layer_violations(tree: ast.Module, filepath: Path, pkg: str) -> list[I
                                 severity="error",
                                 rule="layer-violation",
                                 package=pkg,
-                                message=f"Module '{rel_path}' imports '{imported}' — forbidden by layer rules",
+                                message=(
+                                    f"Module '{rel_path}' imports '{imported}' — forbidden by "
+                                    "layer rules; depend on an abstraction (e.g. a "
+                                    "typing.Protocol) the lower layer implements, injected as "
+                                    "a constructor/function parameter instead of imported "
+                                    "directly (Dependency Inversion Principle / Dependency "
+                                    "Injection)"
+                                ),
                             )
                         )
     return issues
@@ -638,7 +667,13 @@ def check_transport_in_library(tree: ast.Module, filepath: Path, pkg: str) -> li
                         severity="error",
                         rule="transport-in-library",
                         package=pkg,
-                        message=f"Library imports transport module '{top}' — violates G9",
+                        message=(
+                            f"Library imports transport module '{top}' — violates G9; "
+                            "depend on an abstraction (e.g. a typing.Protocol) instead of "
+                            "the concrete transport, injected as a parameter rather than "
+                            "imported directly (Dependency Inversion Principle / Dependency "
+                            "Injection)"
+                        ),
                     )
                 )
     return issues
@@ -671,7 +706,13 @@ def check_circular_imports(tree: ast.Module, filepath: Path, pkg: str) -> list[I
                         severity="warning",
                         rule="potential-circular-import",
                         package=pkg,
-                        message=f"Child module imports parent '{node.module}' — potential circular dependency",
+                        message=(
+                            f"Child module imports parent '{node.module}' — potential "
+                            "circular dependency; extract a shared abstraction (e.g. a "
+                            "typing.Protocol) both sides can depend on, and inject it "
+                            "instead of importing directly to break the cycle "
+                            "(Dependency Inversion Principle / Dependency Injection)"
+                        ),
                     )
                 )
     return issues
@@ -766,7 +807,12 @@ def check_global_mutations(tree: ast.Module, filepath: Path, pkg: str) -> list[I
                                 severity="info",
                                 rule="global-mutable",
                                 package=pkg,
-                                message=f"Module-level mutable '{target.id}' — consider encapsulating",
+                                message=(
+                                    f"Module-level mutable '{target.id}' — consider "
+                                    "encapsulating it in a class and injecting it where "
+                                    "needed instead of reaching for module-level global "
+                                    "state (Dependency Injection)"
+                                ),
                             )
                         )
     return issues
@@ -970,7 +1016,11 @@ def check_magic_numbers(tree: ast.Module, filepath: Path, pkg: str) -> list[Issu
                             severity="info",
                             rule="magic-number",
                             package=pkg,
-                            message=f"magic number {child.value!r} — extract to a named constant",
+                            message=(
+                                f"magic number {child.value!r} — extract to a named constant, "
+                                "or an enum.IntEnum if it's one of a fixed set of status/"
+                                "category codes"
+                            ),
                         )
                     )
 
@@ -978,6 +1028,75 @@ def check_magic_numbers(tree: ast.Module, filepath: Path, pkg: str) -> list[Issu
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             _scan_func(node)
 
+    return issues
+
+
+# ── Rule: Magic Strings ────────────────────────────────────────────────────────
+
+# A string compared exactly once is an ordinary literal; it only looks like
+# an ad-hoc category/status code once the *same* value is compared in
+# multiple places, which is the actual "scattered, fragile equality check"
+# signal this rule is after.
+_MIN_MAGIC_STRING_OCCURRENCES = 2
+
+# Single characters (``"_"``, ``"*"``, ``"."``) are almost always punctuation/
+# wildcard tokens, never a category/status code — exclude them rather than
+# flag every AST-walking tool's inevitable comparisons against them.
+_MIN_MAGIC_STRING_LENGTH = 2
+
+
+def _string_operand(node: ast.expr) -> str | None:
+    """The string value of *node* if it's a "long enough" string constant,
+    else None."""
+    if (
+        isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and len(node.value) >= _MIN_MAGIC_STRING_LENGTH
+    ):
+        return node.value
+    return None
+
+
+def check_magic_strings(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
+    """Flag string literals repeatedly compared for equality against a
+    variable/expression — a sign the value is being used as an ad-hoc
+    category or status code (with fragile, scattered `==`/`.upper()`-style
+    handling) rather than a proper Value Object that canonicalizes it once.
+    """
+    comparisons: list[tuple[str, int]] = []
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Compare):
+            continue
+        if len(node.ops) != 1 or not isinstance(node.ops[0], (ast.Eq, ast.NotEq)):
+            continue
+        left, right = _string_operand(node.left), _string_operand(node.comparators[0])
+        if left is not None and right is None:
+            comparisons.append((left, node.lineno))
+        elif right is not None and left is None:
+            comparisons.append((right, node.lineno))
+
+    counts: dict[str, int] = {}
+    for value, _ in comparisons:
+        counts[value] = counts.get(value, 0) + 1
+
+    issues: list[Issue] = []
+    for value, lineno in comparisons:
+        if counts[value] >= _MIN_MAGIC_STRING_OCCURRENCES:
+            issues.append(
+                Issue(
+                    file=filepath,
+                    line=lineno,
+                    severity="info",
+                    rule="magic-string",
+                    package=pkg,
+                    message=(
+                        f"magic string {value!r} compared {counts[value]} times — consider "
+                        "a Value Object that canonicalizes it once (e.g. a Pydantic model "
+                        "with a @field_validator) instead of repeated string comparisons"
+                    ),
+                )
+            )
     return issues
 
 
@@ -1143,7 +1262,8 @@ def check_deep_inheritance(tree: ast.Module, filepath: Path, pkg: str) -> list[I
                     package=pkg,
                     message=(
                         f"class '{node.name}' has effective inheritance depth "
-                        f"{total_depth} (max {MAX_INHERITANCE_DEPTH}) — use composition"
+                        f"{total_depth} (max {MAX_INHERITANCE_DEPTH}) — use composition, "
+                        "e.g. the Strategy pattern, instead of another inheritance level"
                     ),
                 )
             )
@@ -1286,6 +1406,7 @@ ALL_CHECKS: list[FileCheck] = [
     check_message_chains,
     check_excessive_decorators,
     check_magic_numbers,
+    check_magic_strings,
     check_missing_else,
     check_lazy_class,
     check_deep_inheritance,

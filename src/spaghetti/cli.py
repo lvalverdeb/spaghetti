@@ -11,12 +11,13 @@ from pathlib import Path
 import yaml
 
 from spaghetti.config import BANNER_WIDTH, LINES_PER_KLOC
-from spaghetti.models import Issue, ScanResult, _display_path
+from spaghetti.models import Issue, ScanConfig, ScanResult, _display_path
 from spaghetti.scoring import compute_score, plan_report
 
 __all__ = ["main", "resolve_packages", "discover_cwd_packages"]
 
 _SEVERITY_ORDER = {"info": 0, "warning": 1, "error": 2}
+_SEVERITY_ICON = {"error": "✖", "warning": "⚠", "info": "ℹ"}
 _JSON_INDENT = 2
 
 # Process exit codes: worst issue severity found, or 0 if the run was clean.
@@ -281,9 +282,11 @@ def main() -> int:
     per_package: dict[str, ScanResult] = asyncio.run(
         review_packages_concurrently(
             args.packages,
-            exclude=run_exclude,
-            min_duplicate_lines=args.min_duplicate_lines,
-            twin_similarity=args.twin_similarity,
+            config=ScanConfig(
+                exclude=run_exclude,
+                min_duplicate_lines=args.min_duplicate_lines,
+                twin_similarity=args.twin_similarity,
+            ),
             non_recursive=non_recursive,
         )
     )
@@ -344,8 +347,17 @@ def main() -> int:
 
 def _file_sort_key(item: tuple[str, list[Issue]]) -> tuple[int, int, str]:
     path, file_issues = item
-    error_count = sum(1 for i in file_issues if i.severity == "error")
+    error_count, _warnings, _infos = _severity_counts(file_issues)
     return -error_count, -len(file_issues), path
+
+
+def _severity_counts(issues: list[Issue]) -> tuple[int, int, int]:
+    """(errors, warnings, infos) — the report renders this same tally at
+    several different groupings (overall, per-file, per-package)."""
+    errors = sum(1 for i in issues if i.severity == "error")
+    warnings = sum(1 for i in issues if i.severity == "warning")
+    infos = sum(1 for i in issues if i.severity == "info")
+    return errors, warnings, infos
 
 
 def _render_summary(filtered: list[Issue], total_result: ScanResult) -> None:
@@ -357,9 +369,10 @@ def _render_summary(filtered: list[Issue], total_result: ScanResult) -> None:
     print(f"  Lines scanned:     {total_result.total_lines}")
     print(f"  Functions scanned: {total_result.functions_scanned}")
     print(f"  Total issues:      {len(filtered)}")
-    print(f"    Errors:          {sum(1 for i in filtered if i.severity == 'error')}")
-    print(f"    Warnings:        {sum(1 for i in filtered if i.severity == 'warning')}")
-    print(f"    Info:            {sum(1 for i in filtered if i.severity == 'info')}")
+    errors, warnings, infos = _severity_counts(filtered)
+    print(f"    Errors:          {errors}")
+    print(f"    Warnings:        {warnings}")
+    print(f"    Info:            {infos}")
     if total_result.suppressed:
         print(f"  Suppressed:        {total_result.suppressed} (inline spaghetti-ignore markers)")
     print()
@@ -409,9 +422,7 @@ def _render_affected_files(by_file: dict[str, list[Issue]], top: int) -> None:
     print(f"  {'File':<58} {'E':>3} {'W':>3} {'I':>3}  Rules")
     print(_AFFECTED_FILES_DIVIDER)
     for fpath, issues in sorted_files:
-        e = sum(1 for i in issues if i.severity == "error")
-        w = sum(1 for i in issues if i.severity == "warning")
-        inf = sum(1 for i in issues if i.severity == "info")
+        e, w, inf = _severity_counts(issues)
         rules = sorted(set(i.rule for i in issues))
         rules_str = ", ".join(rules)
         if len(rules_str) > _RULES_COL_WIDTH:
@@ -422,9 +433,7 @@ def _render_affected_files(by_file: dict[str, list[Issue]], top: int) -> None:
 
     print(f"  Worst files (top {top}):")
     for rank, (fpath, issues) in enumerate(sorted_files[:top], 1):
-        e = sum(1 for i in issues if i.severity == "error")
-        w = sum(1 for i in issues if i.severity == "warning")
-        inf = sum(1 for i in issues if i.severity == "info")
+        e, w, inf = _severity_counts(issues)
         print(f"    {rank}. {fpath} ({len(issues)} issues: {e}E {w}W {inf}I)")
     print()
 
@@ -452,7 +461,7 @@ def _render_spaghetti_ignored(total_result: ScanResult) -> None:
     print()
     sorted_ignored = sorted(total_result.ignored, key=lambda i: (_display_path(i.file), i.line))
     for issue in sorted_ignored:
-        icon = {"error": "✖", "warning": "⚠", "info": "ℹ"}[issue.severity]
+        icon = _SEVERITY_ICON[issue.severity]
         reason = issue.reason or "no reason given"
         print(f"  {icon} {_display_path(issue.file)}:{issue.line} [{issue.rule}] {reason}")
     print()
@@ -471,9 +480,7 @@ def _render_detailed_findings(args: argparse.Namespace, by_package: dict[str, li
             print()
             continue
 
-        errors = sum(1 for i in pkg_issues if i.severity == "error")
-        warnings = sum(1 for i in pkg_issues if i.severity == "warning")
-        infos = sum(1 for i in pkg_issues if i.severity == "info")
+        errors, warnings, infos = _severity_counts(pkg_issues)
 
         status = "✖" if errors > 0 else "⚠" if warnings > 0 else "✓"
         print(f"  {status} {pkg_name}: {len(pkg_issues)} issues ({errors}E {warnings}W {infos}I)")
@@ -487,14 +494,12 @@ def _render_detailed_findings(args: argparse.Namespace, by_package: dict[str, li
         sorted_pkg_files = sorted(pkg_files.items(), key=_file_sort_key)
 
         for fpath, file_issues in sorted_pkg_files:
-            fe = sum(1 for i in file_issues if i.severity == "error")
-            fw = sum(1 for i in file_issues if i.severity == "warning")
-            fi = sum(1 for i in file_issues if i.severity == "info")
+            fe, fw, fi = _severity_counts(file_issues)
             status = "✖" if fe > 0 else "⚠" if fw > 0 else "ℹ"
             print(f"    {status} {fpath} ({len(file_issues)} issues: {fe}E {fw}W {fi}I)")
 
             for issue in file_issues:
-                icon = {"error": "✖", "warning": "⚠", "info": "ℹ"}[issue.severity]
+                icon = _SEVERITY_ICON[issue.severity]
                 print(f"      {icon} L{issue.line:<5} [{issue.rule}] {issue.message}")
         print()
 

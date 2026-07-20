@@ -137,7 +137,14 @@ def check_import_cycles_pkg(pkg_name: str, files: list[tuple[Path, ast.Module]])
                                 severity="error",
                                 rule="import-cycle",
                                 package=pkg_name,
-                                message="Circular import: " + " → ".join(cycle),
+                                message=(
+                                    "Circular import: "
+                                    + " → ".join(cycle)
+                                    + " — extract a shared abstraction (e.g. a "
+                                    "typing.Protocol) both sides can depend on, and inject "
+                                    "it instead of importing directly to break the cycle "
+                                    "(Dependency Inversion Principle / Dependency Injection)"
+                                ),
                             )
                         )
             elif neighbor not in visited:

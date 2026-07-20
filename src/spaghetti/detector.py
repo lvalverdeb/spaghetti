@@ -13,7 +13,7 @@ Everything else lives in its own module:
   - spaghetti.models          (Issue, ScanResult, RemediationStep)
   - spaghetti.suppression     (inline spaghetti-ignore markers)
   - spaghetti.ast_helpers     (AST utility functions)
-  - spaghetti.checks.*        (36 check functions)
+  - spaghetti.checks.*        (37 check functions)
   - spaghetti.scoring         (health score, remediation plan)
   - spaghetti.cli             (CLI entry point, resolve_packages)
 """
@@ -38,7 +38,7 @@ from spaghetti.checks.package_level import (
     check_sync_async_twins_pkg,
 )
 from spaghetti.config import DEFAULT_PACKAGES as _DEFAULT_PACKAGES
-from spaghetti.models import Issue, ScanResult
+from spaghetti.models import Issue, ScanConfig, ScanResult
 from spaghetti.suppression import _is_suppressed
 
 DEFAULT_PACKAGES = dict(_DEFAULT_PACKAGES)
@@ -57,15 +57,7 @@ ALLOWED_IMPORT_PREFIXES: dict[str, list[str]] = {
 # ── Scanner (must stay here for monkeypatch compatibility) ────────────────────
 
 
-def scan_package(
-    pkg_name: str,
-    pkg_path: Path,
-    *,
-    exclude: list[str],
-    min_duplicate_lines: int,
-    twin_similarity: float,
-    recursive: bool = True,
-) -> ScanResult:
+def scan_package(pkg_name: str, pkg_path: Path, *, config: ScanConfig) -> ScanResult:
     result = ScanResult()
     if not pkg_path.exists():
         return result
@@ -73,12 +65,12 @@ def scan_package(
     parsed_files: list[tuple[Path, ast.Module]] = []
     source_lines_by_file: dict[Path, list[str]] = {}
 
-    glob_fn = pkg_path.rglob if recursive else pkg_path.glob
+    glob_fn = pkg_path.rglob if config.recursive else pkg_path.glob
     for py_file in sorted(glob_fn("*.py")):
         path_str = str(py_file)
         if "__pycache__" in path_str:
             continue
-        if any(pattern in path_str for pattern in exclude):
+        if any(pattern in path_str for pattern in config.exclude):
             continue
         source = py_file.read_text(encoding="utf-8", errors="replace")
         source_lines_by_file[py_file] = source.splitlines()
@@ -114,8 +106,10 @@ def scan_package(
 
     for pkg_check_fn in PACKAGE_CHECKS:
         result.issues.extend(pkg_check_fn(pkg_name, parsed_files))
-    result.issues.extend(check_duplicate_functions_pkg(pkg_name, parsed_files, min_duplicate_lines))
-    result.issues.extend(check_sync_async_twins_pkg(pkg_name, parsed_files, twin_similarity))
+    result.issues.extend(
+        check_duplicate_functions_pkg(pkg_name, parsed_files, config.min_duplicate_lines)
+    )
+    result.issues.extend(check_sync_async_twins_pkg(pkg_name, parsed_files, config.twin_similarity))
 
     kept: list[Issue] = []
     for issue in result.issues:
@@ -145,21 +139,15 @@ class SpaghettiReviewAgent(Agent):
         pkg_name: str,
         pkg_path: Path,
         *,
-        exclude: list[str],
-        min_duplicate_lines: int,
-        twin_similarity: float,
+        config: ScanConfig,
         executor: concurrent.futures.ProcessPoolExecutor,
-        recursive: bool = True,
         **agent_kwargs: Any,
     ) -> None:
         super().__init__(**agent_kwargs)
         self.pkg_name = pkg_name
         self.pkg_path = pkg_path
-        self.exclude = exclude
-        self.min_duplicate_lines = min_duplicate_lines
-        self.twin_similarity = twin_similarity
+        self.config = config
         self.executor = executor
-        self.recursive = recursive
         self.result: ScanResult | None = None
 
     async def review(self) -> ScanResult:
@@ -167,15 +155,7 @@ class SpaghettiReviewAgent(Agent):
         self._assert_open()
         loop = asyncio.get_running_loop()
 
-        func = partial(
-            scan_package,
-            self.pkg_name,
-            self.pkg_path,
-            exclude=self.exclude,
-            min_duplicate_lines=self.min_duplicate_lines,
-            twin_similarity=self.twin_similarity,
-            recursive=self.recursive,
-        )
+        func = partial(scan_package, self.pkg_name, self.pkg_path, config=self.config)
 
         result = await loop.run_in_executor(self.executor, func)
         self.result = result
@@ -191,9 +171,7 @@ async def _review_one(agent: SpaghettiReviewAgent) -> tuple[str, ScanResult]:
 async def review_packages_concurrently(
     pkg_names: list[str],
     *,
-    exclude: list[str],
-    min_duplicate_lines: int,
-    twin_similarity: float,
+    config: ScanConfig,
     executor: concurrent.futures.Executor | None = None,
     non_recursive: frozenset[str] = frozenset(),
 ) -> dict[str, ScanResult]:
@@ -215,11 +193,8 @@ async def review_packages_concurrently(
             SpaghettiReviewAgent(
                 pkg_name,
                 PACKAGES[pkg_name],
-                exclude=exclude,
-                min_duplicate_lines=min_duplicate_lines,
-                twin_similarity=twin_similarity,
+                config=dataclasses.replace(config, recursive=pkg_name not in non_recursive),
                 executor=executor,
-                recursive=pkg_name not in non_recursive,
                 skip_logger=True,
             )
             for pkg_name in pkg_names

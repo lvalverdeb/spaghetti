@@ -21,7 +21,7 @@ The spaghetti detector is a workspace-level quality gate. It scans Python packag
    ┌───────────────┐                    ┌──────────────────┐
     │  Per-File     │                    │  Per-Package     │
     │  AST Checks   │                    │  Cross-File      │
-    │  (30 rules)   │                    │  Checks (3 rules)│
+    │  (31 rules)   │                    │  Checks (3 rules)│
    └───────┬───────┘                    └────────┬─────────┘
            │                                     │
            ▼                                     ▼
@@ -55,7 +55,7 @@ Exit codes: 0 = clean, 1 = warnings present, 2 = errors present.
 
 ## 3. Rule Catalog
 
-### 3.1 Per-File AST Checks (30 rules)
+### 3.1 Per-File AST Checks (31 rules)
 
 | Rule | Severity | Threshold | What It Catches |
 |------|----------|-----------|-----------------|
@@ -86,6 +86,7 @@ Exit codes: 0 = clean, 1 = warnings present, 2 = errors present.
 | `message-chain` | info | >3 depth | Method/attribute chains exceeding 3 sequential accesses |
 | `excessive-decorators` | info | >3 decorators | Functions or classes with more than 3 stacked decorators |
 | `magic-number` | info | — | Numeric literals other than 0, 1, -1 (`__init__` skipped) |
+| `magic-string` | info | ≥2 occurrences | The same string literal compared for equality in 2+ places — an ad-hoc category/status code |
 | `missing-else` | info | — | `if` blocks with 2+ statements but no `else`/`elif` |
 | `lazy-class` | info | <2 methods | Classes with 0 or 1 methods — prefer a plain function or `@dataclass` |
 | `deep-inheritance` | warning | ≥4 depth | Effective inheritance chain depth exceeding 4 levels |

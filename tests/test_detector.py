@@ -48,6 +48,7 @@ from spaghetti.checks.ast_per_file import (
     check_lazy_class,
     check_long_functions,
     check_magic_numbers,
+    check_magic_strings,
     check_message_chains,
     check_missing_else,
     check_missing_types,
@@ -74,7 +75,7 @@ from spaghetti.config import (
     MAX_FUNCTION_LINES,
     MAX_NESTING_DEPTH,
 )
-from spaghetti.models import Issue, ScanResult
+from spaghetti.models import Issue, ScanConfig, ScanResult
 from spaghetti.scoring import (
     build_remediation_plan,
     compute_priority_score,
@@ -206,7 +207,9 @@ def fake_package(tmp_path: Path) -> Path:
 
 def test_scan_package_finds_issues_in_synthetic_package(fake_package: Path):
     result = ds.scan_package(
-        "fake_pkg", fake_package, exclude=[], min_duplicate_lines=5, twin_similarity=0.6
+        "fake_pkg",
+        fake_package,
+        config=ScanConfig(exclude=[], min_duplicate_lines=5, twin_similarity=0.6),
     )
     assert result.files_scanned == 2
     assert any(i.rule == "bare-except" for i in result.issues)
@@ -217,9 +220,7 @@ def test_scan_package_missing_path_returns_empty_result(tmp_path: Path):
     result = ds.scan_package(
         "missing",
         tmp_path / "does-not-exist",
-        exclude=[],
-        min_duplicate_lines=5,
-        twin_similarity=0.6,
+        config=ScanConfig(exclude=[], min_duplicate_lines=5, twin_similarity=0.6),
     )
     assert result.files_scanned == 0
     assert result.issues == []
@@ -229,9 +230,7 @@ def test_scan_package_respects_exclude(fake_package: Path):
     result = ds.scan_package(
         "fake_pkg",
         fake_package,
-        exclude=["messy.py"],
-        min_duplicate_lines=5,
-        twin_similarity=0.6,
+        config=ScanConfig(exclude=["messy.py"], min_duplicate_lines=5, twin_similarity=0.6),
     )
     assert result.files_scanned == 1
     assert not any(i.rule == "bare-except" for i in result.issues)
@@ -245,7 +244,9 @@ def _scan_single_file(tmp_path: Path, source: str) -> ScanResult:
     pkg_dir.mkdir()
     (pkg_dir / "mod.py").write_text(source)
     return ds.scan_package(
-        "suppress_pkg", pkg_dir, exclude=[], min_duplicate_lines=5, twin_similarity=0.6
+        "suppress_pkg",
+        pkg_dir,
+        config=ScanConfig(exclude=[], min_duplicate_lines=5, twin_similarity=0.6),
     )
 
 
@@ -343,16 +344,8 @@ def test_agent_review_populates_result_and_calls_scan_package(
 ):
     captured: dict[str, object] = {}
 
-    def fake_scan_package(
-        pkg_name, pkg_path, *, exclude, min_duplicate_lines, twin_similarity, recursive=True
-    ):
-        captured.update(
-            pkg_name=pkg_name,
-            pkg_path=pkg_path,
-            exclude=exclude,
-            min_duplicate_lines=min_duplicate_lines,
-            twin_similarity=twin_similarity,
-        )
+    def fake_scan_package(pkg_name, pkg_path, *, config):
+        captured.update(pkg_name=pkg_name, pkg_path=pkg_path, config=config)
         return ScanResult(files_scanned=1)
 
     monkeypatch.setattr(ds, "scan_package", fake_scan_package)
@@ -365,9 +358,7 @@ def test_agent_review_populates_result_and_calls_scan_package(
             agent = ds.SpaghettiReviewAgent(
                 "fake_pkg",
                 fake_package,
-                exclude=["x"],
-                min_duplicate_lines=7,
-                twin_similarity=0.5,
+                config=ScanConfig(exclude=["x"], min_duplicate_lines=7, twin_similarity=0.5),
                 executor=executor,
                 skip_logger=True,
             )
@@ -383,9 +374,7 @@ def test_agent_review_populates_result_and_calls_scan_package(
     assert captured == {
         "pkg_name": "fake_pkg",
         "pkg_path": fake_package,
-        "exclude": ["x"],
-        "min_duplicate_lines": 7,
-        "twin_similarity": 0.5,
+        "config": ScanConfig(exclude=["x"], min_duplicate_lines=7, twin_similarity=0.5),
     }
 
 
@@ -396,9 +385,7 @@ def test_agent_review_after_close_raises():
             agent = ds.SpaghettiReviewAgent(
                 "fake_pkg",
                 Path("/nonexistent"),
-                exclude=[],
-                min_duplicate_lines=5,
-                twin_similarity=0.6,
+                config=ScanConfig(exclude=[], min_duplicate_lines=5, twin_similarity=0.6),
                 executor=executor,
                 skip_logger=True,
             )
@@ -424,9 +411,7 @@ def test_review_packages_concurrently_returns_correct_mapping(
         results = asyncio.run(
             ds.review_packages_concurrently(
                 ["a", "b"],
-                exclude=[],
-                min_duplicate_lines=5,
-                twin_similarity=0.6,
+                config=ScanConfig(exclude=[], min_duplicate_lines=5, twin_similarity=0.6),
                 executor=executor,
             )
         )
@@ -446,9 +431,7 @@ def test_review_packages_concurrently_actually_overlaps(monkeypatch: pytest.Monk
     n = 5
     all_arrived = threading.Barrier(n, timeout=5)
 
-    def fake_scan_package(
-        pkg_name, pkg_path, *, exclude, min_duplicate_lines, twin_similarity, recursive=True
-    ):
+    def fake_scan_package(pkg_name, pkg_path, *, config):
         all_arrived.wait()
         return ScanResult(files_scanned=1)
 
@@ -461,9 +444,7 @@ def test_review_packages_concurrently_actually_overlaps(monkeypatch: pytest.Monk
         results = asyncio.run(
             ds.review_packages_concurrently(
                 pkg_names,
-                exclude=[],
-                min_duplicate_lines=5,
-                twin_similarity=0.6,
+                config=ScanConfig(exclude=[], min_duplicate_lines=5, twin_similarity=0.6),
                 executor=executor,
             )
         )
@@ -479,9 +460,7 @@ def test_review_packages_concurrently_propagates_a_failing_package(
     rather than silently dropping that package from the report — the same
     fail-fast behavior the old sequential loop had."""
 
-    def flaky_scan_package(
-        pkg_name, pkg_path, *, exclude, min_duplicate_lines, twin_similarity, recursive=True
-    ):
+    def flaky_scan_package(pkg_name, pkg_path, *, config):
         if pkg_name == "broken":
             raise RuntimeError("scan exploded")
         return ScanResult(files_scanned=1)
@@ -495,9 +474,7 @@ def test_review_packages_concurrently_propagates_a_failing_package(
             asyncio.run(
                 ds.review_packages_concurrently(
                     ["ok", "broken"],
-                    exclude=[],
-                    min_duplicate_lines=5,
-                    twin_similarity=0.6,
+                    config=ScanConfig(exclude=[], min_duplicate_lines=5, twin_similarity=0.6),
                     executor=executor,
                 )
             )
@@ -691,7 +668,9 @@ def test_scan_package_non_recursive_ignores_subdirectories(tmp_path: Path):
     )
 
     result = ds.scan_package(
-        "root", tmp_path, exclude=[], min_duplicate_lines=5, twin_similarity=0.6, recursive=False
+        "root",
+        tmp_path,
+        config=ScanConfig(exclude=[], min_duplicate_lines=5, twin_similarity=0.6, recursive=False),
     )
 
     assert result.files_scanned == 1
@@ -1361,7 +1340,9 @@ def test_scan_package_handles_syntax_error(tmp_path: Path):
     pkg_dir.mkdir()
     (pkg_dir / "broken.py").write_text("def f(\n")
     result = ds.scan_package(
-        "syntax_err_pkg", pkg_dir, exclude=[], min_duplicate_lines=5, twin_similarity=0.6
+        "syntax_err_pkg",
+        pkg_dir,
+        config=ScanConfig(exclude=[], min_duplicate_lines=5, twin_similarity=0.6),
     )
     assert result.files_scanned == 1
     assert any(i.rule == "syntax-error" for i in result.issues)
@@ -1544,7 +1525,9 @@ def test_suppression_suppresses_sync_async_twin(tmp_path: Path):
         f"async def aload() -> object:\n{body}"
     )
     result = ds.scan_package(
-        "suppress_twin_pkg", pkg_dir, exclude=[], min_duplicate_lines=5, twin_similarity=0.6
+        "suppress_twin_pkg",
+        pkg_dir,
+        config=ScanConfig(exclude=[], min_duplicate_lines=5, twin_similarity=0.6),
     )
     assert not any(i.rule == "sync-async-duplication" for i in result.issues)
     assert result.suppressed == 1
@@ -1711,6 +1694,62 @@ def test_check_magic_numbers_no_flag_in_string():
     source = "def f():\n    x = '42'\n"
     issues = check_magic_numbers(_parse(source), Path("f.py"), "pkg")
     assert issues == []
+
+
+# ── Rule: magic-string ───────────────────────────────────────────────────────
+
+
+def test_check_magic_strings_flags_repeated_comparison():
+    source = (
+        "def f(status):\n"
+        "    if status == 'pending':\n"
+        "        return 1\n"
+        "def g(status):\n"
+        "    if status == 'pending':\n"
+        "        return 2\n"
+    )
+    issues = check_magic_strings(_parse(source), Path("f.py"), "pkg")
+    assert len(issues) == 2
+    assert all(i.rule == "magic-string" for i in issues)
+    assert all(i.severity == "info" for i in issues)
+    assert all("'pending'" in i.message for i in issues)
+    assert all("2 times" in i.message for i in issues)
+
+
+def test_check_magic_strings_allows_single_comparison():
+    source = "def f(status):\n    if status == 'pending':\n        return 1\n"
+    issues = check_magic_strings(_parse(source), Path("f.py"), "pkg")
+    assert issues == []
+
+
+def test_check_magic_strings_allows_empty_string():
+    source = "def f(x):\n    if x == '':\n        return 1\n    if x == '':\n        return 2\n"
+    issues = check_magic_strings(_parse(source), Path("f.py"), "pkg")
+    assert issues == []
+
+
+def test_check_magic_strings_ignores_literal_to_literal_comparison():
+    source = "def f():\n    if 'a' == 'a':\n        pass\n    if 'a' == 'a':\n        pass\n"
+    issues = check_magic_strings(_parse(source), Path("f.py"), "pkg")
+    assert issues == []
+
+
+def test_check_magic_strings_ignores_membership_checks():
+    source = "def f(path):\n    if 'x' in path:\n        pass\n    if 'x' in path:\n        pass\n"
+    issues = check_magic_strings(_parse(source), Path("f.py"), "pkg")
+    assert issues == []
+
+
+def test_check_magic_strings_flags_literal_on_left_side():
+    source = (
+        "def f(status):\n"
+        "    if 'pending' == status:\n"
+        "        pass\n"
+        "    if status == 'pending':\n"
+        "        pass\n"
+    )
+    issues = check_magic_strings(_parse(source), Path("f.py"), "pkg")
+    assert len(issues) == 2
 
 
 # ── Rule: missing-else ──────────────────────────────────────────────────────

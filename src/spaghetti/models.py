@@ -41,6 +41,22 @@ class Issue:
 
 
 @dataclass
+class ScanConfig:
+    """Parameter Object bundling `scan_package`'s tunable knobs.
+
+    Extracted so ``scan_package``, ``SpaghettiReviewAgent.__init__``, and
+    ``review_packages_concurrently`` share one shape instead of the same
+    three-or-four values threaded through each of their signatures in
+    parallel.
+    """
+
+    exclude: list[str]
+    min_duplicate_lines: int
+    twin_similarity: float
+    recursive: bool = True
+
+
+@dataclass
 class ScanResult:
     issues: list[Issue] = field(default_factory=list)
     files_scanned: int = 0
