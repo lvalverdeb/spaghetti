@@ -29,6 +29,11 @@ class Issue:
     rule: str
     message: str
     package: str = ""
+    reason: str | None = None
+    """Human-supplied justification from a ``# spaghetti-ignore: ...`` marker.
+
+    Only ever set on issues that ended up in :attr:`ScanResult.ignored`.
+    """
 
     def __str__(self) -> str:
         icon = {"info": "ℹ", "warning": "⚠", "error": "✖"}[self.severity]
@@ -42,6 +47,13 @@ class ScanResult:
     functions_scanned: int = 0
     total_lines: int = 0
     suppressed: int = 0
+    ignored: list[Issue] = field(default_factory=list)
+    """Issues suppressed by an inline ``# spaghetti-ignore`` marker.
+
+    Kept (rather than discarded) so callers can audit *why* something was
+    waived — each entry's ``reason`` is the text after the marker's ``:``,
+    or ``None`` if the marker didn't give one.
+    """
 
     @property
     def error_count(self) -> int:

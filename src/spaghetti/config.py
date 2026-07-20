@@ -66,11 +66,26 @@ MAX_CLASS_ATTRS = 20
 MIN_BOOLEAN_FLAGS = 3
 DEFAULT_MIN_DUPLICATE_LINES = 5
 DEFAULT_TWIN_SIMILARITY = 0.6
+DEFAULT_TOP_FILES = 5
+DEFAULT_PLAN_TOP = 20
+MIN_TWIN_FUNCTION_LINES = 4
+MAX_PUBLIC_SYMBOLS = 15
+MIN_CLASS_METHODS = 2
+
+# By how much a warning-level threshold is multiplied to decide when a rule
+# escalates its own finding to "error" instead (e.g. high-complexity,
+# god-class) — one shared factor instead of each rule picking its own.
+ERROR_ESCALATION_MULTIPLIER = 1.5
 
 # Gap-analysis thresholds
 MAX_MESSAGE_CHAIN_DEPTH = 3
 MAX_DECORATORS = 3
 MAX_INHERITANCE_DEPTH = 4
+
+# ── Units & display ──────────────────────────────────────────────────────────
+
+LINES_PER_KLOC = 1000
+BANNER_WIDTH = 72
 
 # ── Layer rules ───────────────────────────────────────────────────────────────
 
@@ -95,4 +110,4 @@ ALLOWED_IMPORT_PREFIXES: dict[str, list[str]] = {
 
 DUNDER_RE = re.compile(r"^__.*__$")
 TODO_RE = re.compile(r"#.*\b(TODO|FIXME|XXX|HACK)\b")
-SUPPRESS_MARKER_RE = re.compile(r"#\s*spaghetti-ignore(?:\[([^\]]*)\])?")
+SUPPRESS_MARKER_RE = re.compile(r"#\s*spaghetti-ignore(?:\[([^\]]*)\])?(?:\s*:\s*(.*))?")

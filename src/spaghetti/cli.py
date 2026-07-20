@@ -10,10 +10,30 @@ from pathlib import Path
 
 import yaml
 
+from spaghetti.config import BANNER_WIDTH, LINES_PER_KLOC
 from spaghetti.models import Issue, ScanResult, _display_path
 from spaghetti.scoring import compute_score, plan_report
 
-__all__ = ["main", "resolve_packages"]
+__all__ = ["main", "resolve_packages", "discover_cwd_packages"]
+
+_SEVERITY_ORDER = {"info": 0, "warning": 1, "error": 2}
+_JSON_INDENT = 2
+
+# Process exit codes: worst issue severity found, or 0 if the run was clean.
+_EXIT_CLEAN = 0
+_EXIT_WARNING = 1
+_EXIT_ERROR = 2
+
+# Table dividers for the text report — module-level (not inside a function)
+# so the column widths are computed once and can't drift from each other
+# across the two places some of them are printed.
+_SCORECARD_DIVIDER = f"  {'─' * 16} {'─' * 5} {'─' * 7}  {'─' * 6} {'─' * 6} {'─' * 7}"
+_AFFECTED_FILES_DIVIDER = f"  {'─' * 58} {'─' * 3} {'─' * 3} {'─' * 3}  {'─' * 28}"
+_RULE_SUMMARY_DIVIDER = f"  {'─' * 30} {'─' * 5} {'─' * 3} {'─' * 3} {'─' * 3}"
+
+# The "Rules" column in AFFECTED FILES — same width the divider above uses
+# for it, so a longer rules list truncates right at the column edge.
+_RULES_COL_WIDTH = 28
 
 
 def _load_packages_from_config(config_path: Path) -> dict[str, Path]:
@@ -66,10 +86,65 @@ def resolve_packages(
     return packages
 
 
-def main() -> int:
+_NOISE_DIR_NAMES = frozenset({"__pycache__", "node_modules", "build", "dist", "site-packages"})
+
+DEFAULT_CWD_EXCLUDES: list[str] = [
+    "/.venv/",
+    "/venv/",
+    "/.git/",
+    "/__pycache__/",
+    "/node_modules/",
+    "/build/",
+    "/dist/",
+    ".egg-info",
+    "/.mypy_cache/",
+    "/.pytest_cache/",
+    "/.ruff_cache/",
+    "/.tox/",
+    "/site-packages/",
+]
+
+
+def _is_noise_dir(name: str) -> bool:
+    return name.startswith(".") or name in _NOISE_DIR_NAMES or name.endswith(".egg-info")
+
+
+def discover_cwd_packages(cwd: Path) -> tuple[dict[str, Path], str | None]:
+    """Auto-discover a ``{name: path}`` registry from *cwd* for a bare
+    ``spaghetti`` invocation (no --config/--package given) — this is what
+    keeps a no-args run from silently defaulting to the workspace's
+    boti/boti-data/boti-dask registry: it scans whatever's actually under
+    the current directory instead.
+
+    Each immediate, non-noise subdirectory of *cwd* containing at least one
+    ``.py`` file anywhere in its subtree becomes its own named package.
+    ``.py`` files sitting directly in *cwd* (outside any subdirectory) are
+    grouped into one additional package named after *cwd* itself — the
+    second return value is that package's name (``None`` if there were no
+    such loose files), so callers can scan it non-recursively and avoid
+    double-scanning the subdirectories already registered on their own.
+    """
+    packages: dict[str, Path] = {}
+    for entry in sorted(cwd.iterdir()):
+        if not entry.is_dir() or _is_noise_dir(entry.name):
+            continue
+        if next(entry.rglob("*.py"), None) is not None:
+            packages[entry.name] = entry
+
+    loose_root_name: str | None = None
+    if next(cwd.glob("*.py"), None) is not None:
+        loose_root_name = cwd.resolve().name or str(cwd.resolve())
+        if loose_root_name in packages:
+            loose_root_name = f"{loose_root_name} (root)"
+        packages[loose_root_name] = cwd
+
+    return packages, loose_root_name
+
+
+def _build_arg_parser() -> argparse.ArgumentParser:
     from spaghetti.config import (
         DEFAULT_MIN_DUPLICATE_LINES,
-        DEFAULT_PACKAGES,
+        DEFAULT_TOP_FILES,
         DEFAULT_TWIN_SIMILARITY,
     )
 
@@ -119,8 +194,8 @@ def main() -> int:
     parser.add_argument(
         "--top",
         type=int,
-        default=5,
-        help="Number of worst files to list (default: 5)",
+        default=DEFAULT_TOP_FILES,
+        help=f"Number of worst files to list (default: {DEFAULT_TOP_FILES})",
     )
     parser.add_argument(
         "--exclude",
@@ -145,6 +220,13 @@ def main() -> int:
         action="store_true",
         help="Output a prioritized remediation plan instead of the standard report",
     )
+    return parser
+
+
+def main() -> int:
+    from spaghetti.config import DEFAULT_PACKAGES
+
+    parser = _build_arg_parser()
     args = parser.parse_args()
 
     # Late import to avoid circular dependency (cli → scanner → detector → cli)
@@ -152,12 +234,25 @@ def main() -> int:
     import spaghetti.detector as _det
     from spaghetti.scanner import review_packages_concurrently
 
-    _det.PACKAGES = resolve_packages(
-        config_path=args.config,
-        package_args=args.package_args,
-        defaults=DEFAULT_PACKAGES,
-        cwd=Path.cwd(),
-    )
+    # A bare invocation (no --config, no --package) must never silently fall
+    # back to the workspace's built-in boti/boti-data/boti-dask registry —
+    # instead it auto-discovers whatever's actually under the current
+    # directory. --config/--package (in any combination) opt back into the
+    # explicit registry-resolution path below, unchanged.
+    run_exclude = args.exclude
+    non_recursive: frozenset[str] = frozenset()
+    if args.config is None and not args.package_args:
+        _det.PACKAGES, loose_root_name = discover_cwd_packages(Path.cwd())
+        run_exclude = args.exclude + DEFAULT_CWD_EXCLUDES
+        if loose_root_name is not None:
+            non_recursive = frozenset({loose_root_name})
+    else:
+        _det.PACKAGES = resolve_packages(
+            config_path=args.config,
+            package_args=args.package_args,
+            defaults=DEFAULT_PACKAGES,
+            cwd=Path.cwd(),
+        )
     if not _det.PACKAGES:
         parser.error("no packages to scan — the resolved package registry is empty")
 
@@ -181,15 +276,15 @@ def main() -> int:
             "package path(s) do not exist: " + ", ".join(f"{p}={_det.PACKAGES[p]}" for p in missing)
         )
 
-    severity_order = {"info": 0, "warning": 1, "error": 2}
-    min_severity = severity_order[args.severity]
+    min_severity = _SEVERITY_ORDER[args.severity]
 
     per_package: dict[str, ScanResult] = asyncio.run(
         review_packages_concurrently(
             args.packages,
-            exclude=args.exclude,
+            exclude=run_exclude,
             min_duplicate_lines=args.min_duplicate_lines,
             twin_similarity=args.twin_similarity,
+            non_recursive=non_recursive,
         )
     )
 
@@ -201,8 +296,9 @@ def main() -> int:
         total_result.functions_scanned += result.functions_scanned
         total_result.total_lines += result.total_lines
         total_result.suppressed += result.suppressed
+        total_result.ignored.extend(result.ignored)
 
-    filtered = [i for i in total_result.issues if severity_order[i.severity] >= min_severity]
+    filtered = [i for i in total_result.issues if _SEVERITY_ORDER[i.severity] >= min_severity]
 
     if args.plan:
         print(plan_report(filtered, top=args.top))
@@ -222,37 +318,40 @@ def main() -> int:
                 for i in filtered
             ],
             "suppressed": total_result.suppressed,
+            "ignored": [
+                {
+                    "file": _display_path(i.file),
+                    "line": i.line,
+                    "severity": i.severity,
+                    "rule": i.rule,
+                    "message": i.message,
+                    "package": i.package,
+                    "reason": i.reason,
+                }
+                for i in total_result.ignored
+            ],
         }
-        print(json.dumps(output, indent=2))
+        print(json.dumps(output, indent=_JSON_INDENT))
     else:
         _render_text_report(filtered, total_result, per_package, args)
 
     if total_result.error_count > 0:
-        return 2
+        return _EXIT_ERROR
     if total_result.warning_count > 0:
-        return 1
-    return 0
+        return _EXIT_WARNING
+    return _EXIT_CLEAN
 
 
-def _render_text_report(
-    filtered: list[Issue],
-    total_result: ScanResult,
-    per_package: dict[str, ScanResult],
-    args: argparse.Namespace,
-) -> None:
-    """Render the full text report to stdout."""
-    by_package: dict[str, list[Issue]] = defaultdict(list)
-    for issue in filtered:
-        by_package[issue.package].append(issue)
+def _file_sort_key(item: tuple[str, list[Issue]]) -> tuple[int, int, str]:
+    path, file_issues = item
+    error_count = sum(1 for i in file_issues if i.severity == "error")
+    return -error_count, -len(file_issues), path
 
-    by_file: dict[str, list[Issue]] = defaultdict(list)
-    for issue in filtered:
-        key = _display_path(issue.file)
-        by_file[key].append(issue)
 
-    print("=" * 72)
+def _render_summary(filtered: list[Issue], total_result: ScanResult) -> None:
+    print("=" * BANNER_WIDTH)
     print("  SPAGHETTI CODE DETECTION REPORT")
-    print("=" * 72)
+    print("=" * BANNER_WIDTH)
     print()
     print(f"  Files scanned:     {total_result.files_scanned}")
     print(f"  Lines scanned:     {total_result.total_lines}")
@@ -265,84 +364,104 @@ def _render_text_report(
         print(f"  Suppressed:        {total_result.suppressed} (inline spaghetti-ignore markers)")
     print()
 
-    # ── PACKAGE HEALTH SCORECARD ─────────────────────────────────────────────
-    print("=" * 72)
+
+def _render_scorecard(
+    args: argparse.Namespace,
+    per_package: dict[str, ScanResult],
+    total_result: ScanResult,
+) -> None:
+    print("=" * BANNER_WIDTH)
     print("  PACKAGE HEALTH SCORECARD")
-    print("=" * 72)
+    print("=" * BANNER_WIDTH)
     print()
     print(f"  {'Package':<16} {'Grade':>5} {'Score':>7}  {'Files':>6} {'KLOC':>6} {'Issues':>7}")
-    print(f"  {'─' * 16} {'─' * 5} {'─' * 7}  {'─' * 6} {'─' * 6} {'─' * 7}")
+    print(_SCORECARD_DIVIDER)
     for pkg_name in args.packages:
         result = per_package[pkg_name]
         score, grade = compute_score(result)
-        kloc = result.total_lines / 1000
+        kloc = result.total_lines / LINES_PER_KLOC
         print(
             f"  {pkg_name:<16} {grade:>5} {score:>6.1f}  "
             f"{result.files_scanned:>6} {kloc:>6.1f} {len(result.issues):>7}"
         )
     overall_score, overall_grade = compute_score(total_result)
-    print(f"  {'─' * 16} {'─' * 5} {'─' * 7}  {'─' * 6} {'─' * 6} {'─' * 7}")
+    print(_SCORECARD_DIVIDER)
     print(
         f"  {'OVERALL':<16} {overall_grade:>5} {overall_score:>6.1f}  "
-        f"{total_result.files_scanned:>6} {total_result.total_lines / 1000:>6.1f} {len(total_result.issues):>7}"
+        f"{total_result.files_scanned:>6} {total_result.total_lines / LINES_PER_KLOC:>6.1f} {len(total_result.issues):>7}"
     )
     print()
 
-    # ── AFFECTED FILES ───────────────────────────────────────────────────────
-    def _file_sort_key(item: tuple[str, list[Issue]]) -> tuple[int, int, str]:
-        path, file_issues = item
-        error_count = sum(1 for i in file_issues if i.severity == "error")
-        return -error_count, -len(file_issues), path
 
+def _render_affected_files(by_file: dict[str, list[Issue]], top: int) -> None:
     sorted_files = sorted(by_file.items(), key=_file_sort_key)
 
-    print("=" * 72)
+    print("=" * BANNER_WIDTH)
     print("  AFFECTED FILES")
-    print("=" * 72)
+    print("=" * BANNER_WIDTH)
     print()
 
     if not sorted_files:
         print("  All clean — no issues found.")
         print()
-    else:
-        print(f"  {'File':<58} {'E':>3} {'W':>3} {'I':>3}  Rules")
-        print(f"  {'─' * 58} {'─' * 3} {'─' * 3} {'─' * 3}  {'─' * 28}")
-        for fpath, issues in sorted_files:
-            e = sum(1 for i in issues if i.severity == "error")
-            w = sum(1 for i in issues if i.severity == "warning")
-            inf = sum(1 for i in issues if i.severity == "info")
-            rules = sorted(set(i.rule for i in issues))
-            rules_str = ", ".join(rules)
-            if len(rules_str) > 28:
-                rules_str = rules_str[:25] + "..."
-            marker = "✖" if e > 0 else "⚠" if w > 0 else "ℹ"
-            print(f"  {marker} {fpath:<56} {e:>3} {w:>3} {inf:>3}  {rules_str}")
-        print()
+        return
 
-        print(f"  Worst files (top {args.top}):")
-        for rank, (fpath, issues) in enumerate(sorted_files[: args.top], 1):
-            e = sum(1 for i in issues if i.severity == "error")
-            w = sum(1 for i in issues if i.severity == "warning")
-            inf = sum(1 for i in issues if i.severity == "info")
-            print(f"    {rank}. {fpath} ({len(issues)} issues: {e}E {w}W {inf}I)")
-        print()
+    print(f"  {'File':<58} {'E':>3} {'W':>3} {'I':>3}  Rules")
+    print(_AFFECTED_FILES_DIVIDER)
+    for fpath, issues in sorted_files:
+        e = sum(1 for i in issues if i.severity == "error")
+        w = sum(1 for i in issues if i.severity == "warning")
+        inf = sum(1 for i in issues if i.severity == "info")
+        rules = sorted(set(i.rule for i in issues))
+        rules_str = ", ".join(rules)
+        if len(rules_str) > _RULES_COL_WIDTH:
+            rules_str = rules_str[: _RULES_COL_WIDTH - len("...")] + "..."
+        marker = "✖" if e > 0 else "⚠" if w > 0 else "ℹ"
+        print(f"  {marker} {fpath:<56} {e:>3} {w:>3} {inf:>3}  {rules_str}")
+    print()
 
-    # ── CROSS-FILE FINDINGS ──────────────────────────────────────────────────
+    print(f"  Worst files (top {top}):")
+    for rank, (fpath, issues) in enumerate(sorted_files[:top], 1):
+        e = sum(1 for i in issues if i.severity == "error")
+        w = sum(1 for i in issues if i.severity == "warning")
+        inf = sum(1 for i in issues if i.severity == "info")
+        print(f"    {rank}. {fpath} ({len(issues)} issues: {e}E {w}W {inf}I)")
+    print()
+
+
+def _render_cross_file_findings(filtered: list[Issue]) -> None:
     cross_file_rules = {"duplicate-function-body", "sync-async-duplication", "import-cycle"}
     cross_file_issues = [i for i in filtered if i.rule in cross_file_rules]
-    if cross_file_issues:
-        print("=" * 72)
-        print("  CROSS-FILE FINDINGS (duplication & import cycles)")
-        print("=" * 72)
-        print()
-        for issue in cross_file_issues:
-            print(str(issue))
-        print()
+    if not cross_file_issues:
+        return
+    print("=" * BANNER_WIDTH)
+    print("  CROSS-FILE FINDINGS (duplication & import cycles)")
+    print("=" * BANNER_WIDTH)
+    print()
+    for issue in cross_file_issues:
+        print(str(issue))
+    print()
 
-    # ── DETAILED FINDINGS ────────────────────────────────────────────────────
-    print("=" * 72)
+
+def _render_spaghetti_ignored(total_result: ScanResult) -> None:
+    if not total_result.ignored:
+        return
+    print("=" * BANNER_WIDTH)
+    print("  SPAGHETTI-IGNORED (inline spaghetti-ignore markers)")
+    print("=" * BANNER_WIDTH)
+    print()
+    sorted_ignored = sorted(total_result.ignored, key=lambda i: (_display_path(i.file), i.line))
+    for issue in sorted_ignored:
+        icon = {"error": "✖", "warning": "⚠", "info": "ℹ"}[issue.severity]
+        reason = issue.reason or "no reason given"
+        print(f"  {icon} {_display_path(issue.file)}:{issue.line} [{issue.rule}] {reason}")
+    print()
+
+
+def _render_detailed_findings(args: argparse.Namespace, by_package: dict[str, list[Issue]]) -> None:
+    print("=" * BANNER_WIDTH)
     print("  DETAILED FINDINGS")
-    print("=" * 72)
+    print("=" * BANNER_WIDTH)
     print()
 
     for pkg_name in args.packages:
@@ -358,7 +477,7 @@ def _render_text_report(
 
         status = "✖" if errors > 0 else "⚠" if warnings > 0 else "✓"
         print(f"  {status} {pkg_name}: {len(pkg_issues)} issues ({errors}E {warnings}W {infos}I)")
-        print("-" * 72)
+        print("-" * BANNER_WIDTH)
 
         pkg_files: dict[str, list[Issue]] = defaultdict(list)
         for issue in pkg_issues:
@@ -379,22 +498,48 @@ def _render_text_report(
                 print(f"      {icon} L{issue.line:<5} [{issue.rule}] {issue.message}")
         print()
 
-    # ── RULE SUMMARY ─────────────────────────────────────────────────────────
+
+def _render_rule_summary(filtered: list[Issue]) -> None:
     rule_counts: dict[str, int] = defaultdict(int)
     rule_by_severity: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
     for issue in filtered:
         rule_counts[issue.rule] += 1
         rule_by_severity[issue.rule][issue.severity] += 1
 
-    print("=" * 72)
+    print("=" * BANNER_WIDTH)
     print("  RULE SUMMARY")
-    print("=" * 72)
+    print("=" * BANNER_WIDTH)
     print(f"  {'Rule':<30} {'Total':>5} {'E':>3} {'W':>3} {'I':>3}")
-    print(f"  {'─' * 30} {'─' * 5} {'─' * 3} {'─' * 3} {'─' * 3}")
+    print(_RULE_SUMMARY_DIVIDER)
     for rule_name, count in sorted(rule_counts.items(), key=lambda x: -x[1]):
         rs = rule_by_severity[rule_name]
         print(f"  {rule_name:<30} {count:>5} {rs['error']:>3} {rs['warning']:>3} {rs['info']:>3}")
     print()
+
+
+def _render_text_report(
+    filtered: list[Issue],
+    total_result: ScanResult,
+    per_package: dict[str, ScanResult],
+    args: argparse.Namespace,
+) -> None:
+    """Render the full text report to stdout."""
+    by_package: dict[str, list[Issue]] = defaultdict(list)
+    for issue in filtered:
+        by_package[issue.package].append(issue)
+
+    by_file: dict[str, list[Issue]] = defaultdict(list)
+    for issue in filtered:
+        key = _display_path(issue.file)
+        by_file[key].append(issue)
+
+    _render_summary(filtered, total_result)
+    _render_scorecard(args, per_package, total_result)
+    _render_affected_files(by_file, args.top)
+    _render_cross_file_findings(filtered)
+    _render_spaghetti_ignored(total_result)
+    _render_detailed_findings(args, by_package)
+    _render_rule_summary(filtered)
 
 
 if __name__ == "__main__":

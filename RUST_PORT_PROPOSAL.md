@@ -1,7 +1,7 @@
 # Proposal: A Rust Port of the Spaghetti Detector
 
 **Status**: Phase 5's local prep complete (2026-07-17) — see §10. The port itself has been done since Phase 4: all 36 rules, `674/674 issues identical` to Python, reproducible output, `--plan` byte-identical. Phase 5 added everything a real release needs — crate metadata, `LICENSE`, `README.md`, CI (`cargo test`/`clippy -D warnings`/`fmt --check`, all green), and a working `cargo-dist` config (`dist plan` produces a correct 5-platform release plan) — all local and reversible. **Deliberately not done yet, pending explicit go-ahead**: creating the actual `github.com/lvalverdeb/spaghetti-rs` repo, pushing to it, or publishing to crates.io — the first genuinely irreversible, externally-visible actions in this entire project (everything through Phase 4 was local files only). See §12.
-**Author**: prepared with Claude Code, 2026-07-17
+**Author**: Luis Valverde, 2026-07-17
 **Companion doc**: [SDD.md](SDD.md) (current Python architecture — read first if unfamiliar)
 
 **Decisions (2026-07-17)**: Python is spec of record (§5); new sibling repo `spaghetti-rs` (§9); standalone binary only for now, no wheel (§8); no specific benchmark target driving this — Phase 0 proves correctness, not speed. Full rationale in §11.

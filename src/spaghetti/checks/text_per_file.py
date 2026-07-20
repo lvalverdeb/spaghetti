@@ -9,6 +9,9 @@ from spaghetti.models import Issue
 
 __all__ = ["check_long_file", "check_todo_markers"]
 
+_TODO_SNIPPET_MAX_LEN = 90
+_ELLIPSIS = "..."
+
 
 def check_long_file(source: str, filepath: Path, pkg: str) -> list[Issue]:
     count = len(source.splitlines())
@@ -34,8 +37,8 @@ def check_todo_markers(source: str, filepath: Path, pkg: str) -> list[Issue]:
         match = TODO_RE.search(line)
         if match:
             snippet = line.strip()
-            if len(snippet) > 90:
-                snippet = snippet[:87] + "..."
+            if len(snippet) > _TODO_SNIPPET_MAX_LEN:
+                snippet = snippet[: _TODO_SNIPPET_MAX_LEN - len(_ELLIPSIS)] + _ELLIPSIS
             issues.append(
                 Issue(
                     file=filepath,

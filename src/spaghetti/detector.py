@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """Spaghetti Code Detection Script.
 
-Thin re-export shim that preserves backward compatibility with tests
-that do ``from spaghetti import detector as ds`` and monkeypatch
-``ds.PACKAGES``, ``ds.scan_package``, etc.
+Owns the concurrent scan orchestration (``scan_package``,
+``SpaghettiReviewAgent``, ``review_packages_concurrently``) and the mutable
+``PACKAGES``/``ALLOWED_IMPORT_PREFIXES`` registries — the single place other
+modules (``cli.py``, ``checks/*.py``) late-import (``import spaghetti.detector
+as _det``) to read or monkeypatch the active package registry without a
+circular import at module load time.
 
-All actual logic lives in:
+Everything else lives in its own module:
   - spaghetti.config          (workspace root, thresholds, layer rules)
   - spaghetti.models          (Issue, ScanResult, RemediationStep)
   - spaghetti.suppression     (inline spaghetti-ignore markers)
@@ -20,6 +23,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import concurrent.futures
+import dataclasses
 import sys
 from functools import partial
 from pathlib import Path
@@ -27,132 +31,15 @@ from typing import Any
 
 from boti.core import Agent
 
-# ── Re-export ast_helpers ─────────────────────────────────────────────────────
-from spaghetti.ast_helpers import (  # noqa: F401
-    _count_own_returns,
-    _cyclomatic_complexity,
-    _dump_stmts,
-    _file_line_count,
-    _has_return_type_hint,
-    _is_private,
-    _is_trivial_body,
-    _line_count,
-    _nesting_depth,
-    _param_has_type_hint,
-    _walk_with_class_context,
-)
-
-# ── Re-export check registries ────────────────────────────────────────────────
-from spaghetti.checks import ALL_CHECKS, PACKAGE_CHECKS, SOURCE_CHECKS  # noqa: F401
-
-# ── Re-export ALL check functions ─────────────────────────────────────────────
-from spaghetti.checks.ast_per_file import (  # noqa: F401
-    check_bare_except,
-    check_boolean_flag_params,
-    check_circular_imports,
-    check_complexity,
-    check_dead_code,
-    check_deep_inheritance,
-    check_deep_nesting,
-    check_duplicate_branches,
-    check_encapsulation_violations,
-    check_excessive_decorators,
-    check_excessive_params,
-    check_excessive_returns,
-    check_global_mutations,
-    check_god_class,
-    check_god_module,
-    check_layer_violations,
-    check_lazy_class,
-    check_long_functions,
-    check_magic_numbers,
-    check_message_chains,
-    check_missing_else,
-    check_missing_types,
-    check_mutable_defaults,
-    check_pass_through_methods,
-    check_scope_mutations,
-    check_star_imports,
-    check_swallowed_exceptions,
-    check_transport_in_library,
-    check_untyped_dicts,
-    check_unused_imports,
-)
-from spaghetti.checks.package_level import (  # noqa: F401  # spaghetti-ignore[unused-import]: re-exported for backward compat
+from spaghetti.ast_helpers import _file_line_count
+from spaghetti.checks import ALL_CHECKS, PACKAGE_CHECKS, SOURCE_CHECKS
+from spaghetti.checks.package_level import (
     check_duplicate_functions_pkg,
-    check_import_cycles_pkg,
-    check_orphan_interfaces_pkg,
     check_sync_async_twins_pkg,
 )
-from spaghetti.checks.text_per_file import (  # noqa: F401
-    check_long_file,
-    check_todo_markers,
-)
-
-# ── Re-export CLI helpers ─────────────────────────────────────────────────────
-from spaghetti.cli import (  # noqa: F401
-    _load_packages_from_config,
-    _parse_package_args,
-    resolve_packages,
-)
-
-# ── Re-export config constants ────────────────────────────────────────────────
-from spaghetti.config import (  # noqa: F401
-    COMPLEXITY_THRESHOLD,
-    DEFAULT_MIN_DUPLICATE_LINES,
-    DEFAULT_TWIN_SIMILARITY,
-    DUNDER_RE,
-    LAYER_RULES,
-    MAX_CLASS_ATTRS,
-    MAX_CLASS_METHODS,
-    MAX_CROSS_LAYER_IMPORTS,
-    MAX_DECORATORS,
-    MAX_FILE_LINES,
-    MAX_FUNC_PARAMS,
-    MAX_FUNCTION_LINES,
-    MAX_INHERITANCE_DEPTH,
-    MAX_MESSAGE_CHAIN_DEPTH,
-    MAX_NESTING_DEPTH,
-    MAX_RETURNS,
-    MIN_BOOLEAN_FLAGS,
-    SUPPRESS_MARKER_RE,
-    TODO_RE,
-    WORKSPACE_ROOT,
-    _find_workspace_root,
-)
 from spaghetti.config import DEFAULT_PACKAGES as _DEFAULT_PACKAGES
-
-# ── Re-export models ──────────────────────────────────────────────────────────
-from spaghetti.models import (  # noqa: F401
-    Issue,
-    RemediationStep,
-    ScanResult,
-    Severity,
-    _display_path,
-)
-
-# ── Re-export scoring ─────────────────────────────────────────────────────────
-from spaghetti.scoring import (  # noqa: F401
-    build_remediation_plan,
-    compute_priority_score,
-    compute_score,
-    plan_report,
-)
-
-# ── Re-export suppression helpers ─────────────────────────────────────────────
-from spaghetti.suppression import (  # noqa: F401
-    _is_suppressed,
-    _suppressed_rules_at,
-)
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Items that MUST remain in detector.py for test monkeypatch compatibility:
-#   - PACKAGES (tests: monkeypatch.setattr(ds, "PACKAGES", ...))
-#   - ALLOWED_IMPORT_PREFIXES (tests: ds.ALLOWED_IMPORT_PREFIXES[pkg_name] = ...)
-#   - scan_package (tests: monkeypatch.setattr(ds, "scan_package", fake))
-#   - SpaghettiReviewAgent (tests: ds.SpaghettiReviewAgent(...))
-#   - review_packages_concurrently (tests: ds.review_packages_concurrently(...))
-# ══════════════════════════════════════════════════════════════════════════════
+from spaghetti.models import Issue, ScanResult
+from spaghetti.suppression import _is_suppressed
 
 DEFAULT_PACKAGES = dict(_DEFAULT_PACKAGES)
 
@@ -177,6 +64,7 @@ def scan_package(
     exclude: list[str],
     min_duplicate_lines: int,
     twin_similarity: float,
+    recursive: bool = True,
 ) -> ScanResult:
     result = ScanResult()
     if not pkg_path.exists():
@@ -185,7 +73,8 @@ def scan_package(
     parsed_files: list[tuple[Path, ast.Module]] = []
     source_lines_by_file: dict[Path, list[str]] = {}
 
-    for py_file in sorted(pkg_path.rglob("*.py")):
+    glob_fn = pkg_path.rglob if recursive else pkg_path.glob
+    for py_file in sorted(glob_fn("*.py")):
         path_str = str(py_file)
         if "__pycache__" in path_str:
             continue
@@ -231,8 +120,10 @@ def scan_package(
     kept: list[Issue] = []
     for issue in result.issues:
         lines = source_lines_by_file.get(issue.file)
-        if lines is not None and _is_suppressed(issue, lines):
+        sup = _is_suppressed(issue, lines) if lines is not None else None
+        if sup is not None:
             result.suppressed += 1
+            result.ignored.append(dataclasses.replace(issue, reason=sup.reason))
         else:
             kept.append(issue)
     result.issues = kept
@@ -258,6 +149,7 @@ class SpaghettiReviewAgent(Agent):
         min_duplicate_lines: int,
         twin_similarity: float,
         executor: concurrent.futures.ProcessPoolExecutor,
+        recursive: bool = True,
         **agent_kwargs: Any,
     ) -> None:
         super().__init__(**agent_kwargs)
@@ -267,6 +159,7 @@ class SpaghettiReviewAgent(Agent):
         self.min_duplicate_lines = min_duplicate_lines
         self.twin_similarity = twin_similarity
         self.executor = executor
+        self.recursive = recursive
         self.result: ScanResult | None = None
 
     async def review(self) -> ScanResult:
@@ -281,6 +174,7 @@ class SpaghettiReviewAgent(Agent):
             exclude=self.exclude,
             min_duplicate_lines=self.min_duplicate_lines,
             twin_similarity=self.twin_similarity,
+            recursive=self.recursive,
         )
 
         result = await loop.run_in_executor(self.executor, func)
@@ -301,8 +195,15 @@ async def review_packages_concurrently(
     min_duplicate_lines: int,
     twin_similarity: float,
     executor: concurrent.futures.Executor | None = None,
+    non_recursive: frozenset[str] = frozenset(),
 ) -> dict[str, ScanResult]:
-    """Review every requested package at once using concurrent execution."""
+    """Review every requested package at once using concurrent execution.
+
+    ``non_recursive`` names scan only their own top-level ``*.py`` files —
+    used for the synthetic "loose root scripts" package cwd auto-discovery
+    can produce alongside real subpackages, so its own directory's already-
+    registered subdirectories aren't double-scanned.
+    """
     own_executor: concurrent.futures.Executor | None = None
     if executor is None:
         own_executor = concurrent.futures.ProcessPoolExecutor(
@@ -318,6 +219,7 @@ async def review_packages_concurrently(
                 min_duplicate_lines=min_duplicate_lines,
                 twin_similarity=twin_similarity,
                 executor=executor,
+                recursive=pkg_name not in non_recursive,
                 skip_logger=True,
             )
             for pkg_name in pkg_names

@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import ast
-from collections.abc import Callable
+from collections import defaultdict
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 from spaghetti.ast_helpers import (
@@ -19,6 +20,7 @@ from spaghetti.ast_helpers import (
 )
 from spaghetti.config import (
     COMPLEXITY_THRESHOLD,
+    ERROR_ESCALATION_MULTIPLIER,
     LAYER_RULES,
     MAX_CLASS_ATTRS,
     MAX_CLASS_METHODS,
@@ -28,8 +30,10 @@ from spaghetti.config import (
     MAX_INHERITANCE_DEPTH,
     MAX_MESSAGE_CHAIN_DEPTH,
     MAX_NESTING_DEPTH,
+    MAX_PUBLIC_SYMBOLS,
     MAX_RETURNS,
     MIN_BOOLEAN_FLAGS,
+    MIN_CLASS_METHODS,
 )
 from spaghetti.config import DUNDER_RE as _DUNDER_RE
 from spaghetti.models import Issue
@@ -75,7 +79,11 @@ def check_complexity(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
                     Issue(
                         file=filepath,
                         line=node.lineno,
-                        severity="error" if cc > 15 else "warning",
+                        severity=(
+                            "error"
+                            if cc > COMPLEXITY_THRESHOLD * ERROR_ESCALATION_MULTIPLIER
+                            else "warning"
+                        ),
                         rule="high-complexity",
                         package=pkg,
                         message=f"{node.name}() has complexity {cc} (max {COMPLEXITY_THRESHOLD})",
@@ -298,12 +306,10 @@ def check_untyped_dicts(tree: ast.Module, filepath: Path, pkg: str) -> list[Issu
 # ── Rule: Unused Imports ──────────────────────────────────────────────────────
 
 
-def check_unused_imports(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
-    """Flags imported names never referenced in the file.
-    ``__init__.py`` is skipped (re-exports)."""
-    if filepath.name == "__init__.py":
-        return []
-
+def _collect_imported_names(tree: ast.Module) -> dict[str, int]:
+    """Map each name an ``import``/``from ... import`` statement binds to the
+    line it was imported on. ``*`` and ``__future__`` imports don't bind a
+    real name; ``_`` is the conventional "I don't care about this" sink."""
     imported: dict[str, int] = {}
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -320,10 +326,12 @@ def check_unused_imports(tree: ast.Module, filepath: Path, pkg: str) -> list[Iss
                 name = alias.asname or alias.name
                 if name != "_":
                     imported[name] = node.lineno
+    return imported
 
-    if not imported:
-        return []
 
+def _collect_used_names(tree: ast.Module) -> set[str]:
+    """Every name referenced by the module — either directly, or listed in
+    an ``__all__ = [...]`` re-export declaration."""
     used: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Name):
@@ -336,6 +344,20 @@ def check_unused_imports(tree: ast.Module, filepath: Path, pkg: str) -> list[Iss
             for elt in node.value.elts:
                 if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
                     used.add(elt.value)
+    return used
+
+
+def check_unused_imports(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
+    """Flags imported names never referenced in the file.
+    ``__init__.py`` is skipped (re-exports)."""
+    if filepath.name == "__init__.py":
+        return []
+
+    imported = _collect_imported_names(tree)
+    if not imported:
+        return []
+
+    used = _collect_used_names(tree)
 
     issues: list[Issue] = []
     for name, lineno in sorted(imported.items(), key=lambda kv: kv[1]):
@@ -419,31 +441,64 @@ def check_duplicate_branches(tree: ast.Module, filepath: Path, pkg: str) -> list
 
 # ── Rule: Encapsulation Violations ────────────────────────────────────────────
 
+# getattr(obj, name)/setattr(obj, name, value)/hasattr(obj, name) all take the
+# attribute-name argument in position 1 — reflective access can't be checked
+# without at least that many positional args.
+_MIN_REFLECTIVE_ACCESS_ARGS = 2
+
+
+def _is_allowed_private_access_base(base: ast.AST, class_name: str | None) -> bool:
+    """True if *base* is ``self``/``cls``/the enclosing class/``super()`` —
+    i.e. a private member reached through it is *not* an encapsulation
+    violation."""
+    if isinstance(base, ast.Name) and base.id in ("self", "cls", class_name):
+        return True
+    return (
+        isinstance(base, ast.Call) and isinstance(base.func, ast.Name) and base.func.id == "super"
+    )
+
+
+def _is_private_name(name: str) -> bool:
+    return name.startswith("_") and not _DUNDER_RE.match(name)
+
+
+def _direct_private_access(node: ast.AST, class_name: str | None) -> str | None:
+    """The private attribute name reached via ``obj._attr``, or None."""
+    if not (isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load)):
+        return None
+    if not _is_private_name(node.attr) or _is_allowed_private_access_base(node.value, class_name):
+        return None
+    return node.attr
+
+
+def _reflective_private_access(node: ast.AST, class_name: str | None) -> tuple[str, str] | None:
+    """The ``(func_name, attr_name)`` reached via ``getattr(obj, "_attr")``
+    (or ``setattr``/``hasattr``), or None."""
+    if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)):
+        return None
+    if (
+        node.func.id not in ("getattr", "setattr", "hasattr")
+        or len(node.args) < _MIN_REFLECTIVE_ACCESS_ARGS
+    ):
+        return None
+    attr_arg = node.args[1]
+    if not (isinstance(attr_arg, ast.Constant) and isinstance(attr_arg.value, str)):
+        return None
+    if not _is_private_name(attr_arg.value) or _is_allowed_private_access_base(
+        node.args[0], class_name
+    ):
+        return None
+    return node.func.id, attr_arg.value
+
 
 def check_encapsulation_violations(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
     """Reaching into another object's private (``_name``) attribute from outside
     self/cls/its own class."""
     issues: list[Issue] = []
 
-    def is_allowed_base(base: ast.AST, class_name: str | None) -> bool:
-        if isinstance(base, ast.Name) and base.id in ("self", "cls", class_name):
-            return True
-        if (
-            isinstance(base, ast.Call)
-            and isinstance(base.func, ast.Name)
-            and base.func.id == "super"
-        ):
-            return True
-        return False
-
     for node, class_name in _walk_with_class_context(tree):
-        if (
-            isinstance(node, ast.Attribute)
-            and isinstance(node.ctx, ast.Load)
-            and node.attr.startswith("_")
-            and not _DUNDER_RE.match(node.attr)
-            and not is_allowed_base(node.value, class_name)
-        ):
+        direct_attr = _direct_private_access(node, class_name)
+        if direct_attr is not None:
             issues.append(
                 Issue(
                     file=filepath,
@@ -451,20 +506,14 @@ def check_encapsulation_violations(tree: ast.Module, filepath: Path, pkg: str) -
                     severity="info",
                     rule="encapsulation-violation",
                     package=pkg,
-                    message=f"Accesses private member '.{node.attr}' through something other than self/cls",
+                    message=f"Accesses private member '.{direct_attr}' through something other than self/cls",
                 )
             )
-        elif (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id in ("getattr", "setattr", "hasattr")
-            and len(node.args) >= 2
-            and isinstance(node.args[1], ast.Constant)
-            and isinstance(node.args[1].value, str)
-            and node.args[1].value.startswith("_")
-            and not _DUNDER_RE.match(node.args[1].value)
-            and not is_allowed_base(node.args[0], class_name)
-        ):
+            continue
+
+        reflective = _reflective_private_access(node, class_name)
+        if reflective is not None:
+            func_name, reflective_attr = reflective
             issues.append(
                 Issue(
                     file=filepath,
@@ -472,7 +521,7 @@ def check_encapsulation_violations(tree: ast.Module, filepath: Path, pkg: str) -
                     severity="info",
                     rule="encapsulation-violation",
                     package=pkg,
-                    message=f"{node.func.id}(..., '{node.args[1].value}', ...) reaches into a private attribute",
+                    message=f"{func_name}(..., '{reflective_attr}', ...) reaches into a private attribute",
                 )
             )
     return issues
@@ -501,7 +550,8 @@ def check_god_class(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
         if len(methods) > MAX_CLASS_METHODS or len(attrs) > MAX_CLASS_ATTRS:
             severity = (
                 "error"
-                if len(methods) > MAX_CLASS_METHODS * 1.5 or len(attrs) > MAX_CLASS_ATTRS * 1.5
+                if len(methods) > MAX_CLASS_METHODS * ERROR_ESCALATION_MULTIPLIER
+                or len(attrs) > MAX_CLASS_ATTRS * ERROR_ESCALATION_MULTIPLIER
                 else "warning"
             )
             issues.append(
@@ -725,54 +775,55 @@ def check_global_mutations(tree: ast.Module, filepath: Path, pkg: str) -> list[I
 # ── Rule: Scope Mutation ──────────────────────────────────────────────────────
 
 
+def _walk_own_scope(node: ast.AST) -> Iterator[ast.AST]:
+    """Yield nodes in this scope only — stop at nested function/class defs."""
+    for child in ast.iter_child_nodes(node):
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        yield child
+        yield from _walk_own_scope(child)
+
+
 def check_scope_mutations(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
     """Detect functions that explicitly mutate outer-scope variables via
     ``global`` or ``nonlocal`` declarations followed by assignments."""
     issues: list[Issue] = []
 
-    def _walk_own_scope(node: ast.AST):
-        """Yield nodes in this scope only — stop at nested function/class defs."""
-        for child in ast.iter_child_nodes(node):
-            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                continue
-            yield child
-            yield from _walk_own_scope(child)
-
     for func_node in ast.walk(tree):
         if not isinstance(func_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
 
-        outer_names: set[str] = set()
+        # Every outer-scope name this function declares, mapped to which
+        # keyword(s) declared it — computed once so the mutation scan below
+        # doesn't need to re-walk the scope per candidate to answer
+        # "global, nonlocal, or both?".
+        declared_by: dict[str, set[str]] = defaultdict(set)
         for child in _walk_own_scope(func_node):
             if isinstance(child, ast.Global):
-                outer_names.update(child.names)
+                for name in child.names:
+                    declared_by[name].add("global")
             elif isinstance(child, ast.Nonlocal):
-                outer_names.update(child.names)
+                for name in child.names:
+                    declared_by[name].add("nonlocal")
 
-        if not outer_names:
+        if not declared_by:
             continue
 
         for child in _walk_own_scope(func_node):
             target_name: str | None = None
             if isinstance(child, ast.Assign):
                 for t in child.targets:
-                    if isinstance(t, ast.Name) and t.id in outer_names:
+                    if isinstance(t, ast.Name) and t.id in declared_by:
                         target_name = t.id
                         break
             elif isinstance(child, ast.AugAssign) and isinstance(child.target, ast.Name):
-                if child.target.id in outer_names:
+                if child.target.id in declared_by:
                     target_name = child.target.id
 
             if target_name is None:
                 continue
 
-            declared_by: set[str] = set()
-            for sub in _walk_own_scope(func_node):
-                if isinstance(sub, ast.Global) and target_name in sub.names:
-                    declared_by.add("global")
-                elif isinstance(sub, ast.Nonlocal) and target_name in sub.names:
-                    declared_by.add("nonlocal")
-            keyword_str = "/".join(sorted(declared_by))
+            keyword_str = "/".join(sorted(declared_by[target_name]))
 
             issues.append(
                 Issue(
@@ -930,6 +981,11 @@ def check_magic_numbers(tree: ast.Module, filepath: Path, pkg: str) -> list[Issu
     return issues
 
 
+# A single-statement `if` body has no meaningful "negative path" to miss —
+# only bodies at or above this length are flagged by check_missing_else.
+_NON_TRIVIAL_BODY_THRESHOLD = 2
+
+
 def check_missing_else(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
     """Flag ``if`` blocks with 2+ statements but no ``else``/``elif``.
 
@@ -937,9 +993,18 @@ def check_missing_else(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue
     flow (``return``/``raise``/``continue``/``break``): the negative path is
     either "the rest of the function" or "the next loop iteration", and is
     not missing.
+
+    Also skipped when the body's last statement is itself a bare ``if``
+    (no ``elif``/``else`` of its own), a discarded-return call expression
+    (e.g. ``issues.append(...)``), or a ``for``/``while`` loop. All three
+    shapes — some setup then a single trailing conditional, side-effect
+    call, or iteration — mean the ``if`` exists only to *guard entry* into
+    that final step (e.g. "if this is the right node type: compute X,
+    then record it" / "...then check each of its sub-elements"), not to
+    encode two real branches of logic. The "negative path" is just "skip
+    this node", which is already what happens without an else.
     """
     issues: list[Issue] = []
-    _NON_TRIVIAL_BODY_THRESHOLD = 2
 
     for node in ast.walk(tree):
         if not isinstance(node, ast.If):
@@ -949,6 +1014,12 @@ def check_missing_else(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue
         if len(node.body) < _NON_TRIVIAL_BODY_THRESHOLD:
             continue
         if isinstance(node.body[-1], _CONTROL_FLOW_TERMINAL_STMT_TYPES):
+            continue
+        if isinstance(node.body[-1], ast.If) and not node.body[-1].orelse:
+            continue
+        if isinstance(node.body[-1], (ast.For, ast.AsyncFor, ast.While)):
+            continue
+        if isinstance(node.body[-1], ast.Expr) and isinstance(node.body[-1].value, ast.Call):
             continue
         issues.append(
             Issue(
@@ -1010,7 +1081,7 @@ def check_lazy_class(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
         if _lazy_class_is_exempt(node):
             continue
         methods = [n for n in node.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
-        if len(methods) < 2:
+        if len(methods) < MIN_CLASS_METHODS:
             issues.append(
                 Issue(
                     file=filepath,
@@ -1024,9 +1095,28 @@ def check_lazy_class(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
     return issues
 
 
+def _base_names(bases: list[ast.expr]) -> list[str]:
+    """Base-class names from a ``ClassDef``'s ``bases`` — dotted names
+    collapsed to their final attribute (e.g. ``pkg.Base`` -> ``Base``)."""
+    names: list[str] = []
+    for base in bases:
+        if isinstance(base, ast.Name):
+            names.append(base.id)
+        elif isinstance(base, ast.Attribute):
+            names.append(base.attr)
+    return names
+
+
 def check_deep_inheritance(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
     """Flag classes whose effective inheritance depth exceeds MAX_INHERITANCE_DEPTH."""
     issues: list[Issue] = []
+
+    # Indexed once so the BFS below does O(1) name lookups instead of
+    # re-walking the whole module tree for every ancestor it discovers.
+    classes_by_name: dict[str, list[ast.ClassDef]] = defaultdict(list)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
+            classes_by_name[node.name].append(node)
 
     for node in ast.walk(tree):
         if not isinstance(node, ast.ClassDef):
@@ -1034,24 +1124,14 @@ def check_deep_inheritance(tree: ast.Module, filepath: Path, pkg: str) -> list[I
         if not node.bases:
             continue
         seen: set[str] = set()
-        queue: list[str] = []
-        for base in node.bases:
-            if isinstance(base, ast.Name):
-                queue.append(base.id)
-            elif isinstance(base, ast.Attribute):
-                queue.append(base.attr)
+        queue: list[str] = _base_names(node.bases)
         while queue:
             name = queue.pop(0)
             if name in seen or name == node.name:
                 continue
             seen.add(name)
-            for other in ast.walk(tree):
-                if isinstance(other, ast.ClassDef) and other.name == name:
-                    for base in other.bases:
-                        if isinstance(base, ast.Name):
-                            queue.append(base.id)
-                        elif isinstance(base, ast.Attribute):
-                            queue.append(base.attr)
+            for other in classes_by_name.get(name, ()):
+                queue.extend(_base_names(other.bases))
         total_depth = len(seen)
         if total_depth >= MAX_INHERITANCE_DEPTH:
             issues.append(
@@ -1088,7 +1168,7 @@ def check_god_module(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
             public_funcs += 1
 
     total = public_classes + public_funcs
-    if total > 15:
+    if total > MAX_PUBLIC_SYMBOLS:
         issues.append(
             Issue(
                 file=filepath,

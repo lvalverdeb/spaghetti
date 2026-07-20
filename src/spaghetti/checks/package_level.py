@@ -13,6 +13,7 @@ from spaghetti.ast_helpers import (
     _line_count,
     _walk_with_class_context,
 )
+from spaghetti.config import MIN_TWIN_FUNCTION_LINES
 from spaghetti.models import Issue, _display_path
 
 __all__ = ["check_import_cycles_pkg", "check_duplicate_functions_pkg", "check_sync_async_twins_pkg"]
@@ -153,6 +154,9 @@ def check_import_cycles_pkg(pkg_name: str, files: list[tuple[Path, ast.Module]])
 
 # ── Duplicate Function Bodies (whole-package) ─────────────────────────────────
 
+# A body needs at least this many occurrences to be a "duplicate" at all.
+_MIN_DUPLICATE_OCCURRENCES = 2
+
 
 def check_duplicate_functions_pkg(
     pkg_name: str, files: list[tuple[Path, ast.Module]], min_lines: int
@@ -171,7 +175,7 @@ def check_duplicate_functions_pkg(
 
     issues: list[Issue] = []
     for occurrences in groups.values():
-        if len(occurrences) < 2:
+        if len(occurrences) < _MIN_DUPLICATE_OCCURRENCES:
             continue
         occurrences.sort(key=lambda item: (str(item[0]), item[1].lineno))
         locations = ", ".join(f"{_display_path(fp)}:{n.lineno} ({n.name})" for fp, n in occurrences)
@@ -232,7 +236,7 @@ def check_sync_async_twins_pkg(
 
     for (filepath, class_name), by_name in scope_functions.items():
         for name, (node, is_async) in by_name.items():
-            if _line_count(node) < 4:
+            if _line_count(node) < MIN_TWIN_FUNCTION_LINES:
                 continue
             for candidate in _twin_candidates(name):
                 if candidate == name or candidate not in by_name:

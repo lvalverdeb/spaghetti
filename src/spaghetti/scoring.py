@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 
+from spaghetti.config import BANNER_WIDTH, DEFAULT_PLAN_TOP, LINES_PER_KLOC
 from spaghetti.models import Issue, RemediationStep, ScanResult, _display_path
 
 __all__ = [
@@ -17,16 +18,17 @@ __all__ = [
 
 _SEVERITY_WEIGHT = {"error": 6.0, "warning": 1.5, "info": 0.3}
 _GRADE_BANDS = [(90.0, "A"), (75.0, "B"), (60.0, "C"), (40.0, "D"), (0.0, "F")]
+_MAX_SCORE = 100.0
 
 
 def compute_score(result: ScanResult) -> tuple[float, str]:
     """A rough 0-100 health score, weighted by severity and normalized per
     1,000 lines so larger packages aren't unfairly penalized."""
     if result.total_lines == 0:
-        return 100.0, "A"
+        return _MAX_SCORE, "A"
     penalty = sum(_SEVERITY_WEIGHT[i.severity] for i in result.issues)
-    penalty_per_kloc = penalty / (result.total_lines / 1000)
-    score = max(0.0, 100.0 - penalty_per_kloc)
+    penalty_per_kloc = penalty / (result.total_lines / LINES_PER_KLOC)
+    score = max(0.0, _MAX_SCORE - penalty_per_kloc)
     grade = next(g for threshold, g in _GRADE_BANDS if score >= threshold)
     return score, grade
 
@@ -80,19 +82,27 @@ _PRIORITY_LEVELS = [
     (0.0, "P3", "LOW — track in backlog"),
 ]
 
+# Module-level (not inside plan_report) so the column widths are computed
+# once rather than re-literalized every render.
+_PLAN_TABLE_DIVIDER = f"  {'─' * 3} {'─' * 4} {'─' * 30} {'─' * 4} {'─' * 9} {'─' * 6}  {'─' * 5}"
+
 
 def compute_priority_score(issue: Issue) -> float:
     """Priority score = severity_weight x fix_effort."""
     return _SEVERITY_WEIGHT[issue.severity] * _FIX_EFFORT.get(issue.rule, 1.0)
 
 
+_EFFORT_LEVELS = [
+    (4.0, "major"),
+    (2.5, "moderate"),
+    (1.0, "minor"),
+]
+
+
 def _effort_label(effort: float) -> str:
-    if effort >= 4.0:
-        return "major"
-    if effort >= 2.5:
-        return "moderate"
-    if effort >= 1.0:
-        return "minor"
+    for threshold, label in _EFFORT_LEVELS:
+        if effort >= threshold:
+            return label
     return "trivial"
 
 
@@ -136,14 +146,14 @@ def build_remediation_plan(issues: list[Issue]) -> list[RemediationStep]:
     return steps
 
 
-def plan_report(issues: list[Issue], *, top: int = 20) -> str:
+def plan_report(issues: list[Issue], *, top: int = DEFAULT_PLAN_TOP) -> str:
     """Render a prioritized remediation plan as a text report."""
     steps = build_remediation_plan(issues)
     lines: list[str] = []
 
-    lines.append("=" * 72)
+    lines.append("=" * BANNER_WIDTH)
     lines.append("  REMEDIATION PLAN — Prioritized Fix Order")
-    lines.append("=" * 72)
+    lines.append("=" * BANNER_WIDTH)
     lines.append("")
 
     if not steps:
@@ -164,7 +174,7 @@ def plan_report(issues: list[Issue], *, top: int = 20) -> str:
     lines.append(
         f"  {'#':<3} {'Pri':<4} {'Rule':<30} {'Sev':<4} {'Effort':<9} {'Issues':>6}  {'Score':>5}"
     )
-    lines.append(f"  {'─' * 3} {'─' * 4} {'─' * 30} {'─' * 4} {'─' * 9} {'─' * 6}  {'─' * 5}")
+    lines.append(_PLAN_TABLE_DIVIDER)
 
     shown = steps[:top]
     for idx, step in enumerate(shown, 1):
@@ -182,9 +192,9 @@ def plan_report(issues: list[Issue], *, top: int = 20) -> str:
         lines.append(f"  ... and {len(steps) - top} more rules (use --plan to see all)")
 
     lines.append("")
-    lines.append("=" * 72)
+    lines.append("=" * BANNER_WIDTH)
     lines.append("  RECOMMENDED FIX ORDER")
-    lines.append("=" * 72)
+    lines.append("=" * BANNER_WIDTH)
     lines.append("")
 
     for _, label, desc in _PRIORITY_LEVELS:
