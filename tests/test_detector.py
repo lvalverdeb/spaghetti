@@ -1636,6 +1636,18 @@ def test_check_lazy_class_allows_pydantic_base_settings():
     assert issues == []
 
 
+def test_check_lazy_class_allows_named_tuple():
+    source = "class C(NamedTuple):\n    x: int\n"
+    issues = ds.check_lazy_class(_parse(source), Path("f.py"), "pkg")
+    assert issues == []
+
+
+def test_check_lazy_class_allows_named_tuple_qualified():
+    source = "class C(typing.NamedTuple):\n    x: int\n"
+    issues = ds.check_lazy_class(_parse(source), Path("f.py"), "pkg")
+    assert issues == []
+
+
 def test_check_lazy_class_allows_dataclass_decorator():
     source = "@dataclass\nclass C:\n    x: int = 1\n"
     issues = ds.check_lazy_class(_parse(source), Path("f.py"), "pkg")

@@ -968,7 +968,7 @@ def check_missing_else(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue
 # not a resolved import) that already make a class a declarative data
 # container — flagging them as "lazy" and suggesting "@dataclass" is
 # nonsensical since they already fulfill that exact role.
-_LAZY_CLASS_EXEMPT_BASE_NAMES = frozenset({"BaseModel", "BaseSettings"})
+_LAZY_CLASS_EXEMPT_BASE_NAMES = frozenset({"BaseModel", "BaseSettings", "NamedTuple"})
 
 
 def _lazy_class_decorator_target_name(dec: ast.expr) -> str | None:
