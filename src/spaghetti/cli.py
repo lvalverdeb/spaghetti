@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import sys
 from collections import defaultdict
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 import yaml
@@ -24,6 +25,16 @@ _JSON_INDENT = 2
 _EXIT_CLEAN = 0
 _EXIT_WARNING = 1
 _EXIT_ERROR = 2
+
+
+def _spaghetti_version() -> str:
+    """Installed ``spaghetti-detector`` version, read from package metadata
+    (not hardcoded) so it can never drift from ``pyproject.toml``."""
+    try:
+        return version("spaghetti-detector")
+    except PackageNotFoundError:
+        return "unknown"
+
 
 # Table dividers for the text report — module-level (not inside a function)
 # so the column widths are computed once and can't drift from each other
@@ -362,7 +373,7 @@ def _severity_counts(issues: list[Issue]) -> tuple[int, int, int]:
 
 def _render_summary(filtered: list[Issue], total_result: ScanResult) -> None:
     print("=" * BANNER_WIDTH)
-    print("  SPAGHETTI CODE DETECTION REPORT")
+    print(f"  SPAGHETTI CODE DETECTION REPORT (v{_spaghetti_version()})")
     print("=" * BANNER_WIDTH)
     print()
     print(f"  Files scanned:     {total_result.files_scanned}")

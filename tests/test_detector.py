@@ -1060,14 +1060,41 @@ def test_check_encapsulation_flags_private_access():
 
 
 def test_check_encapsulation_flags_getattr_private():
+    # foo is the *second* parameter here (not the enclosing function's own
+    # first), so the first-parameter exemption below doesn't apply — this
+    # is still a genuine reflective violation into an unrelated object.
     source = (
         "class Foo:\n"
         "    def __init__(self):\n"
         "        self._x = 1\n"
         "\n"
-        "def bar(foo: Foo) -> int:\n"
+        "def bar(label: str, foo: Foo) -> int:\n"
         "    return getattr(foo, '_x')\n"
     )
+    issues = check_encapsulation_violations(_parse(source), Path("f.py"), "pkg")
+    assert len(issues) == 1
+
+
+def test_check_encapsulation_allows_first_param_direct_access():
+    # A free function taking the "owning" instance explicitly as its first
+    # parameter (the extracted-__init__/method pattern, e.g.
+    # boti_data.gateway._gateway_init) is the free-function equivalent of
+    # self access, not a violation.
+    source = "class Gateway:\n    pass\n\ndef _init_resource(gateway: Gateway, config) -> None:\n    gateway._strategy.build(config)\n"
+    issues = check_encapsulation_violations(_parse(source), Path("f.py"), "pkg")
+    assert issues == []
+
+
+def test_check_encapsulation_allows_first_param_reflective_access():
+    source = "class Gateway:\n    pass\n\ndef _init_resource(gateway: Gateway) -> None:\n    setattr(gateway, '_strategy', None)\n"
+    issues = check_encapsulation_violations(_parse(source), Path("f.py"), "pkg")
+    assert issues == []
+
+
+def test_check_encapsulation_still_flags_non_first_param_access():
+    # Sanity check: the exemption is positional, not "any parameter" — a
+    # second-positional parameter's private state is still a violation.
+    source = "class Gateway:\n    pass\n\ndef combine(label: str, gateway: Gateway) -> None:\n    gateway._strategy.build()\n"
     issues = check_encapsulation_violations(_parse(source), Path("f.py"), "pkg")
     assert len(issues) == 1
 
@@ -1665,7 +1692,7 @@ def test_check_excessive_decorators_no_decorator():
 
 def test_check_magic_numbers_flags_literal():
     source = "def f():\n    x = 42\n"
-    issues = check_magic_numbers(_parse(source), Path("f.py"), "pkg")
+    issues = check_magic_numbers(_parse(source), source, Path("f.py"), "pkg")
     assert len(issues) == 1
     assert issues[0].rule == "magic-number"
     assert issues[0].severity == "info"
@@ -1674,46 +1701,71 @@ def test_check_magic_numbers_flags_literal():
 
 def test_check_magic_numbers_allows_zero_one_minus_one():
     source = "def f():\n    a = 0\n    b = 1\n    c = -1\n"
-    issues = check_magic_numbers(_parse(source), Path("f.py"), "pkg")
+    issues = check_magic_numbers(_parse(source), source, Path("f.py"), "pkg")
     assert issues == []
 
 
 def test_check_magic_numbers_skips_init():
     source = "class C:\n    def __init__(self):\n        self.x = 42\n"
-    issues = check_magic_numbers(_parse(source), Path("f.py"), "pkg")
+    issues = check_magic_numbers(_parse(source), source, Path("f.py"), "pkg")
     assert issues == []
 
 
 def test_check_magic_numbers_flags_float():
     source = "def f():\n    ratio = 0.75\n"
-    issues = check_magic_numbers(_parse(source), Path("f.py"), "pkg")
+    issues = check_magic_numbers(_parse(source), source, Path("f.py"), "pkg")
     assert len(issues) == 1
     assert issues[0].rule == "magic-number"
 
 
 def test_check_magic_numbers_no_flag_in_string():
     source = "def f():\n    x = '42'\n"
-    issues = check_magic_numbers(_parse(source), Path("f.py"), "pkg")
+    issues = check_magic_numbers(_parse(source), source, Path("f.py"), "pkg")
     assert issues == []
 
 
 def test_check_magic_numbers_skips_keyword_argument():
     source = "def f():\n    warnings.warn('x', UserWarning, stacklevel=2)\n"
-    issues = check_magic_numbers(_parse(source), Path("f.py"), "pkg")
+    issues = check_magic_numbers(_parse(source), source, Path("f.py"), "pkg")
     assert issues == []
 
 
 def test_check_magic_numbers_skips_default_parameter_value():
     source = "def f(max_attempts: int = 3, base_delay: float = 0.5):\n    pass\n"
-    issues = check_magic_numbers(_parse(source), Path("f.py"), "pkg")
+    issues = check_magic_numbers(_parse(source), source, Path("f.py"), "pkg")
     assert issues == []
 
 
 def test_check_magic_numbers_still_flags_positional_argument():
     source = "def f():\n    do_thing(42)\n"
-    issues = check_magic_numbers(_parse(source), Path("f.py"), "pkg")
+    issues = check_magic_numbers(_parse(source), source, Path("f.py"), "pkg")
     assert len(issues) == 1
     assert "42" in issues[0].message
+
+
+def test_check_magic_numbers_displays_octal_notation():
+    # 0o600 and 384 parse to the identical int — the message must show the
+    # literal as written in source, not its decimal AST value, or "384"
+    # reads as an arbitrary number when it isn't.
+    source = "def f():\n    os.chmod(path, 0o600)\n"
+    issues = check_magic_numbers(_parse(source), source, Path("f.py"), "pkg")
+    assert len(issues) == 1
+    assert "0o600" in issues[0].message
+    assert "384" not in issues[0].message
+
+
+def test_check_magic_numbers_displays_hex_notation():
+    source = "def f():\n    mask = 0x1F\n"
+    issues = check_magic_numbers(_parse(source), source, Path("f.py"), "pkg")
+    assert len(issues) == 1
+    assert "0x1F" in issues[0].message
+
+
+def test_check_magic_numbers_displays_underscored_notation():
+    source = "def f():\n    batch = 1_000\n"
+    issues = check_magic_numbers(_parse(source), source, Path("f.py"), "pkg")
+    assert len(issues) == 1
+    assert "1_000" in issues[0].message
 
 
 # ── Rule: magic-string ───────────────────────────────────────────────────────

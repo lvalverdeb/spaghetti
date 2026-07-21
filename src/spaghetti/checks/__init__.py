@@ -6,7 +6,7 @@ import ast
 from collections.abc import Callable
 from pathlib import Path
 
-from spaghetti.checks.ast_per_file import ALL_CHECKS
+from spaghetti.checks.ast_per_file import ALL_CHECKS, check_magic_numbers
 from spaghetti.checks.package_level import (
     check_duplicate_functions_pkg,
     check_import_cycles_pkg,
@@ -21,6 +21,7 @@ __all__ = [
     "SOURCE_CHECKS",
     "PACKAGE_CHECKS",
     "check_duplicate_functions_pkg",
+    "check_magic_numbers",
     "check_orphan_interfaces_pkg",
     "check_sync_async_twins_pkg",
 ]

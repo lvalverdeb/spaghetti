@@ -16,7 +16,6 @@ from spaghetti.ast_helpers import (
     _line_count,
     _nesting_depth,
     _param_has_type_hint,
-    _walk_with_class_context,
 )
 from spaghetti.config import (
     COMPLEXITY_THRESHOLD,
@@ -469,11 +468,59 @@ def check_duplicate_branches(tree: ast.Module, filepath: Path, pkg: str) -> list
 _MIN_REFLECTIVE_ACCESS_ARGS = 2
 
 
-def _is_allowed_private_access_base(base: ast.AST, class_name: str | None) -> bool:
-    """True if *base* is ``self``/``cls``/the enclosing class/``super()`` —
-    i.e. a private member reached through it is *not* an encapsulation
-    violation."""
-    if isinstance(base, ast.Name) and base.id in ("self", "cls", class_name):
+def _first_param_name(func: ast.FunctionDef | ast.AsyncFunctionDef) -> str | None:
+    params = func.args.posonlyargs + func.args.args
+    return params[0].arg if params else None
+
+
+def _walk_with_encapsulation_context(
+    tree: ast.AST,
+) -> Iterator[tuple[ast.AST, str | None, str | None]]:
+    """Yield (node, enclosing_class_name_or_None, enclosing_function's first
+    positional param name_or_None) for every node in the tree.
+
+    A local variant of ``_walk_with_class_context`` (which only tracks the
+    class) because check_encapsulation_violations also needs to recognize a
+    free function's own explicit "self-like" first parameter — see
+    ``_is_allowed_private_access_base``.
+    """
+
+    def visit(
+        node: ast.AST, class_name: str | None, first_param: str | None
+    ) -> Iterator[tuple[ast.AST, str | None, str | None]]:
+        for child in ast.iter_child_nodes(node):
+            new_class_name = class_name
+            new_first_param = first_param
+            if isinstance(child, ast.ClassDef):
+                new_class_name = child.name
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                new_first_param = _first_param_name(child)
+            yield child, class_name, first_param
+            yield from visit(child, new_class_name, new_first_param)
+
+    yield from visit(tree, None, None)
+
+
+def _is_allowed_private_access_base(
+    base: ast.AST, class_name: str | None, first_param_name: str | None
+) -> bool:
+    """True if *base* is ``self``/``cls``/the enclosing class/``super()``, or
+    the enclosing function's own first parameter — i.e. a private member
+    reached through it is *not* an encapsulation violation.
+
+    The first-parameter case covers module-level free functions that take a
+    not-yet-fully-constructed (or otherwise "owning") instance explicitly as
+    their first argument instead of being a method — a documented pattern in
+    this codebase for splitting a class's own ``__init__``/method bodies out
+    for line-count headroom (see e.g. ``boti_data.gateway._gateway_init``).
+    Reaching into that parameter's private state is the free-function
+    equivalent of ``self`` access, not a real violation. This is syntactic,
+    not semantic: it can't tell "the extracted-method pattern" from "a
+    function that just happens to take some other object as its first
+    argument and reaches into it for no good reason" — but the former is
+    common and idiomatic enough here that the trade-off favors exempting it.
+    """
+    if isinstance(base, ast.Name) and base.id in ("self", "cls", class_name, first_param_name):
         return True
     return (
         isinstance(base, ast.Call) and isinstance(base.func, ast.Name) and base.func.id == "super"
@@ -484,16 +531,22 @@ def _is_private_name(name: str) -> bool:
     return name.startswith("_") and not _DUNDER_RE.match(name)
 
 
-def _direct_private_access(node: ast.AST, class_name: str | None) -> str | None:
+def _direct_private_access(
+    node: ast.AST, class_name: str | None, first_param_name: str | None
+) -> str | None:
     """The private attribute name reached via ``obj._attr``, or None."""
     if not (isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load)):
         return None
-    if not _is_private_name(node.attr) or _is_allowed_private_access_base(node.value, class_name):
+    if not _is_private_name(node.attr) or _is_allowed_private_access_base(
+        node.value, class_name, first_param_name
+    ):
         return None
     return node.attr
 
 
-def _reflective_private_access(node: ast.AST, class_name: str | None) -> tuple[str, str] | None:
+def _reflective_private_access(
+    node: ast.AST, class_name: str | None, first_param_name: str | None
+) -> tuple[str, str] | None:
     """The ``(func_name, attr_name)`` reached via ``getattr(obj, "_attr")``
     (or ``setattr``/``hasattr``), or None."""
     if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)):
@@ -507,7 +560,7 @@ def _reflective_private_access(node: ast.AST, class_name: str | None) -> tuple[s
     if not (isinstance(attr_arg, ast.Constant) and isinstance(attr_arg.value, str)):
         return None
     if not _is_private_name(attr_arg.value) or _is_allowed_private_access_base(
-        node.args[0], class_name
+        node.args[0], class_name, first_param_name
     ):
         return None
     return node.func.id, attr_arg.value
@@ -518,8 +571,8 @@ def check_encapsulation_violations(tree: ast.Module, filepath: Path, pkg: str) -
     self/cls/its own class."""
     issues: list[Issue] = []
 
-    for node, class_name in _walk_with_class_context(tree):
-        direct_attr = _direct_private_access(node, class_name)
+    for node, class_name, first_param_name in _walk_with_encapsulation_context(tree):
+        direct_attr = _direct_private_access(node, class_name, first_param_name)
         if direct_attr is not None:
             issues.append(
                 Issue(
@@ -533,7 +586,7 @@ def check_encapsulation_violations(tree: ast.Module, filepath: Path, pkg: str) -
             )
             continue
 
-        reflective = _reflective_private_access(node, class_name)
+        reflective = _reflective_private_access(node, class_name, first_param_name)
         if reflective is not None:
             func_name, reflective_attr = reflective
             issues.append(
@@ -998,7 +1051,16 @@ def check_excessive_decorators(tree: ast.Module, filepath: Path, pkg: str) -> li
     return issues
 
 
-def check_magic_numbers(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
+def _magic_number_display(source: str, node: ast.Constant) -> str:
+    """The literal exactly as written in *source* (``0o600``, ``0x1F``,
+    ``1_000``), not the decimal value of its parsed ``ast.Constant.value`` —
+    the AST itself has no notation to fall back on, since e.g. ``0o600`` and
+    ``384`` parse to the identical int. Reporting "magic number 384" for a
+    literal someone wrote as ``0o600`` reads as arbitrary when it isn't."""
+    return ast.get_source_segment(source, node) or repr(node.value)
+
+
+def check_magic_numbers(tree: ast.Module, source: str, filepath: Path, pkg: str) -> list[Issue]:
     """Flag numeric literals other than 0, 1, or -1 in a function's body.
 
     Skips the function's own signature — a default parameter value (e.g.
@@ -1006,6 +1068,10 @@ def check_magic_numbers(tree: ast.Module, filepath: Path, pkg: str) -> list[Issu
     and skips a literal passed as a call's keyword argument (e.g.
     ``stacklevel=2``), since the keyword name documents it the same way a
     named constant would. ``__init__`` methods are skipped entirely.
+
+    Not part of ``ALL_CHECKS``/``FileCheck``: unlike every other per-file
+    check, this one needs the raw source text (see ``_magic_number_display``)
+    in addition to the parsed tree, so ``detector.py`` calls it directly.
     """
     _ALLOWED = {-1, 0, 1}
     issues: list[Issue] = []
@@ -1033,9 +1099,9 @@ def check_magic_numbers(tree: ast.Module, filepath: Path, pkg: str) -> list[Issu
                         rule="magic-number",
                         package=pkg,
                         message=(
-                            f"magic number {child.value!r} — extract to a named constant, "
-                            "or an enum.IntEnum if it's one of a fixed set of status/"
-                            "category codes"
+                            f"magic number {_magic_number_display(source, child)} — extract to "
+                            "a named constant, or an enum.IntEnum if it's one of a fixed set of "
+                            "status/category codes"
                         ),
                     )
                 )
@@ -1529,7 +1595,6 @@ ALL_CHECKS: list[FileCheck] = [
     check_dead_code,
     check_message_chains,
     check_excessive_decorators,
-    check_magic_numbers,
     check_magic_strings,
     check_missing_else,
     check_lazy_class,

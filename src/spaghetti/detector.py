@@ -32,7 +32,7 @@ from typing import Any
 from boti.core import Agent
 
 from spaghetti.ast_helpers import _file_line_count
-from spaghetti.checks import ALL_CHECKS, PACKAGE_CHECKS, SOURCE_CHECKS
+from spaghetti.checks import ALL_CHECKS, PACKAGE_CHECKS, SOURCE_CHECKS, check_magic_numbers
 from spaghetti.checks.package_level import (
     check_duplicate_functions_pkg,
     check_sync_async_twins_pkg,
@@ -101,6 +101,7 @@ def scan_package(pkg_name: str, pkg_path: Path, *, config: ScanConfig) -> ScanRe
 
         for check_fn in ALL_CHECKS:
             result.issues.extend(check_fn(tree, py_file, pkg_name))
+        result.issues.extend(check_magic_numbers(tree, source, py_file, pkg_name))
 
         parsed_files.append((py_file, tree))
 
