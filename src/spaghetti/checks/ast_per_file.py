@@ -1170,6 +1170,27 @@ def check_magic_strings(tree: ast.Module, filepath: Path, pkg: str) -> list[Issu
 # only bodies at or above this length are flagged by check_missing_else.
 _NON_TRIVIAL_BODY_THRESHOLD = 2
 
+# Assignment target types that mean the ``if`` body's trailing assignment is
+# mutating state that already exists outside the branch (an attribute, a
+# dict/list slot) rather than introducing a value that only this branch
+# knows about. ``ast.Name`` is deliberately excluded: a fresh local (`a = 1`)
+# is exactly the shape that might need a counterpart in a missing negative
+# path, so it stays flagged — see check_missing_else's docstring.
+_STATE_MUTATION_TARGET_TYPES = (ast.Attribute, ast.Subscript)
+
+
+def _assignment_targets(stmt: ast.stmt) -> list[ast.expr]:
+    if isinstance(stmt, ast.Assign):
+        return stmt.targets
+    if isinstance(stmt, (ast.AugAssign, ast.AnnAssign)):
+        return [stmt.target]
+    return []
+
+
+def _is_trailing_state_mutation(stmt: ast.stmt) -> bool:
+    targets = _assignment_targets(stmt)
+    return bool(targets) and all(isinstance(t, _STATE_MUTATION_TARGET_TYPES) for t in targets)
+
 
 def check_missing_else(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
     """Flag ``if`` blocks with 2+ statements but no ``else``/``elif``.
@@ -1181,13 +1202,24 @@ def check_missing_else(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue
 
     Also skipped when the body's last statement is itself a bare ``if``
     (no ``elif``/``else`` of its own), a discarded-return call expression
-    (e.g. ``issues.append(...)``), or a ``for``/``while`` loop. All three
-    shapes — some setup then a single trailing conditional, side-effect
-    call, or iteration — mean the ``if`` exists only to *guard entry* into
-    that final step (e.g. "if this is the right node type: compute X,
-    then record it" / "...then check each of its sub-elements"), not to
-    encode two real branches of logic. The "negative path" is just "skip
-    this node", which is already what happens without an else.
+    (e.g. ``issues.append(...)``) or bare ``yield``/``yield from``, or a
+    ``for``/``while`` loop. All these shapes — some setup then a single
+    trailing conditional, side-effect call, yield, or iteration — mean the
+    ``if`` exists only to *guard entry* into that final step (e.g. "if this
+    is the right node type: compute X, then record it" / "...then check
+    each of its sub-elements"), not to encode two real branches of logic.
+    The "negative path" is just "skip this node", which is already what
+    happens without an else.
+
+    Also skipped when the body's last statement assigns to an attribute or
+    subscript (``self.x = ...`` / ``cache[key] = ...``) rather than a fresh
+    local name: this is the "conditionally update already-existing state"
+    idiom (lazy-init-then-cache, one-time setup flags, degrade-in-place
+    dicts) where the "negative path" is simply "leave the existing value
+    alone" — already true without an else. A fresh local name (``a = 1``)
+    is not exempted: unlike an attribute/subscript, it has no existence
+    outside the branch, so it's the shape most likely to actually be
+    missing its negative-path counterpart.
     """
     issues: list[Issue] = []
 
@@ -1204,7 +1236,11 @@ def check_missing_else(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue
             continue
         if isinstance(node.body[-1], (ast.For, ast.AsyncFor, ast.While)):
             continue
-        if isinstance(node.body[-1], ast.Expr) and isinstance(node.body[-1].value, ast.Call):
+        if isinstance(node.body[-1], ast.Expr) and isinstance(
+            node.body[-1].value, (ast.Call, ast.Yield, ast.YieldFrom)
+        ):
+            continue
+        if _is_trailing_state_mutation(node.body[-1]):
             continue
         issues.append(
             Issue(
@@ -1226,6 +1262,14 @@ def check_missing_else(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue
 # nonsensical since they already fulfill that exact role.
 _LAZY_CLASS_EXEMPT_BASE_NAMES = frozenset({"BaseModel", "BaseSettings", "NamedTuple"})
 
+# A base class named by the standard exception/warning naming convention
+# (PEP 8: "exception names should use the CapWords convention and the
+# suffix Error/Exception/Warning") makes a class raise-able — it can't be
+# "a plain function or @dataclass" and still be an exception type. Matching
+# by suffix (rather than a fixed list of builtins) also covers subclassing
+# a project's own custom exception base, not just direct builtin bases.
+_LAZY_CLASS_EXEMPT_BASE_SUFFIXES = ("Error", "Exception", "Warning")
+
 
 def _lazy_class_decorator_target_name(dec: ast.expr) -> str | None:
     """The name a decorator resolves to, e.g. 'dataclass' for both
@@ -1239,16 +1283,21 @@ def _lazy_class_decorator_target_name(dec: ast.expr) -> str | None:
 
 
 def _lazy_class_is_exempt(node: ast.ClassDef) -> bool:
-    """True if *node* already is a declarative data container.
+    """True if *node* already is a declarative data container, or a raise-able
+    exception/warning type.
 
     Pydantic ``BaseModel``/``BaseSettings`` subclasses and
     ``@dataclass``-decorated classes already satisfy check_lazy_class's own
     suggested remedy, so they should never be flagged regardless of method
-    count.
+    count. Exception/warning subclasses are exempt for a different reason:
+    the remedy itself (a plain function or dataclass) isn't raise-able, so it
+    doesn't apply.
     """
     for base in node.bases:
         name = base.id if isinstance(base, ast.Name) else getattr(base, "attr", None)
-        if name in _LAZY_CLASS_EXEMPT_BASE_NAMES:
+        if name is None:
+            continue
+        if name in _LAZY_CLASS_EXEMPT_BASE_NAMES or name.endswith(_LAZY_CLASS_EXEMPT_BASE_SUFFIXES):
             return True
     return any(_lazy_class_decorator_target_name(dec) == "dataclass" for dec in node.decorator_list)
 

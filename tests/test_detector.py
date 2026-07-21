@@ -1898,6 +1898,48 @@ def test_check_missing_else_still_flags_guard_then_plain_assignment():
     assert len(issues) == 1
 
 
+def test_check_missing_else_allows_guard_then_attribute_assignment():
+    # Lazy-init-then-cache idiom: mutating self.x (already-existing state)
+    # needs no negative path — "leave it as is" is already the default.
+    source = "def f():\n    if x is None:\n        x = compute()\n        self.x = x\n    return self.x\n"
+    assert check_missing_else(_parse(source), Path("f.py"), "pkg") == []
+
+
+def test_check_missing_else_allows_guard_then_subscript_assignment():
+    source = "def f():\n    if endpoint:\n        kwargs['a'] = 1\n        kwargs['b'] = 2\n    return kwargs\n"
+    assert check_missing_else(_parse(source), Path("f.py"), "pkg") == []
+
+
+def test_check_missing_else_allows_guard_then_augassign_attribute():
+    source = "def f():\n    if x:\n        a = 1\n        self.count += a\n"
+    assert check_missing_else(_parse(source), Path("f.py"), "pkg") == []
+
+
+def test_check_missing_else_allows_guard_then_yield():
+    source = (
+        "def f():\n"
+        "    for c in items:\n"
+        "        if c not in seen:\n"
+        "            seen.add(c)\n"
+        "            yield c\n"
+    )
+    assert check_missing_else(_parse(source), Path("f.py"), "pkg") == []
+
+
+def test_check_missing_else_allows_guard_then_yield_from():
+    source = "def f():\n    if x:\n        a = 1\n        yield from a\n"
+    assert check_missing_else(_parse(source), Path("f.py"), "pkg") == []
+
+
+def test_check_missing_else_still_flags_mixed_target_assignment():
+    # Sanity check: a multi-target assignment must be *all* attribute/
+    # subscript targets to qualify — `a = self.x = 1` still introduces a
+    # fresh local (`a`), so it stays flagged.
+    source = "def f():\n    if x:\n        a = 1\n        a = self.x = 2\n"
+    issues = check_missing_else(_parse(source), Path("f.py"), "pkg")
+    assert len(issues) == 1
+
+
 # ── Rule: lazy-class ────────────────────────────────────────────────────────
 
 
@@ -1978,6 +2020,38 @@ def test_check_lazy_class_still_flags_unrelated_base():
     source = "class C(SomeOtherBase):\n    x = 1\n"
     issues = check_lazy_class(_parse(source), Path("f.py"), "pkg")
     assert len(issues) == 1
+
+
+def test_check_lazy_class_allows_builtin_exception_subclass():
+    source = "class SchemaValidationError(TypeError):\n    '''Raised on bad schema.'''\n"
+    issues = check_lazy_class(_parse(source), Path("f.py"), "pkg")
+    assert issues == []
+
+
+def test_check_lazy_class_allows_plain_exception_subclass():
+    source = "class MyError(Exception):\n    pass\n"
+    issues = check_lazy_class(_parse(source), Path("f.py"), "pkg")
+    assert issues == []
+
+
+def test_check_lazy_class_allows_custom_exception_hierarchy():
+    # Not a builtin base, but named by the same Error/Exception/Warning
+    # convention — covers subclassing a project's own exception base.
+    source = "class NotFoundError(AppBaseError):\n    pass\n"
+    issues = check_lazy_class(_parse(source), Path("f.py"), "pkg")
+    assert issues == []
+
+
+def test_check_lazy_class_allows_warning_subclass():
+    source = "class DeprecatedFeatureWarning(UserWarning):\n    pass\n"
+    issues = check_lazy_class(_parse(source), Path("f.py"), "pkg")
+    assert issues == []
+
+
+def test_check_lazy_class_allows_qualified_exception_subclass():
+    source = "class Boom(builtins.RuntimeError):\n    pass\n"
+    issues = check_lazy_class(_parse(source), Path("f.py"), "pkg")
+    assert issues == []
 
 
 # ── Rule: deep-inheritance ──────────────────────────────────────────────────
