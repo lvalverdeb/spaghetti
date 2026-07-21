@@ -1014,7 +1014,10 @@ def check_magic_numbers(tree: ast.Module, filepath: Path, pkg: str) -> list[Issu
         if func.name == "__init__":
             return
         keyword_value_ids = {
-            id(kw.value) for stmt in func.body for kw in ast.walk(stmt) if isinstance(kw, ast.keyword)
+            id(kw.value)
+            for stmt in func.body
+            for kw in ast.walk(stmt)
+            if isinstance(kw, ast.keyword)
         }
         for stmt in func.body:
             for child in ast.walk(stmt):
