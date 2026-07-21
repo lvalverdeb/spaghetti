@@ -22,7 +22,9 @@ from spaghetti.config import (
     ERROR_ESCALATION_MULTIPLIER,
     LAYER_RULES,
     MAX_CLASS_ATTRS,
+    MAX_CLASS_LCOM4,
     MAX_CLASS_METHODS,
+    MAX_CLASS_WMC,
     MAX_DECORATORS,
     MAX_FUNC_PARAMS,
     MAX_FUNCTION_LINES,
@@ -33,6 +35,8 @@ from spaghetti.config import (
     MAX_RETURNS,
     MIN_BOOLEAN_FLAGS,
     MIN_CLASS_METHODS,
+    MIN_METHODS_FOR_COHESION,
+    MIN_STATEFUL_METHOD_FRACTION,
 )
 from spaghetti.config import DUNDER_RE as _DUNDER_RE
 from spaghetti.models import Issue
@@ -606,7 +610,9 @@ def check_encapsulation_violations(tree: ast.Module, filepath: Path, pkg: str) -
 
 
 def check_god_class(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
-    """A class with too many methods or instance attributes."""
+    """A class with too many methods or instance attributes, or too much total
+    complexity across its methods (WMC — Weighted Methods per Class) even if
+    the method/attribute counts alone stay under threshold."""
     issues: list[Issue] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.ClassDef):
@@ -622,11 +628,13 @@ def check_god_class(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
                     and sub.value.id == "self"
                 ):
                     attrs.add(sub.attr)
-        if len(methods) > MAX_CLASS_METHODS or len(attrs) > MAX_CLASS_ATTRS:
+        wmc = sum(_cyclomatic_complexity(method) for method in methods)
+        if len(methods) > MAX_CLASS_METHODS or len(attrs) > MAX_CLASS_ATTRS or wmc > MAX_CLASS_WMC:
             severity = (
                 "error"
                 if len(methods) > MAX_CLASS_METHODS * ERROR_ESCALATION_MULTIPLIER
                 or len(attrs) > MAX_CLASS_ATTRS * ERROR_ESCALATION_MULTIPLIER
+                or wmc > MAX_CLASS_WMC * ERROR_ESCALATION_MULTIPLIER
                 else "warning"
             )
             issues.append(
@@ -637,8 +645,205 @@ def check_god_class(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
                     rule="god-class",
                     package=pkg,
                     message=(
-                        f"class {node.name} has {len(methods)} methods and {len(attrs)} attributes "
-                        f"(max {MAX_CLASS_METHODS}/{MAX_CLASS_ATTRS}) — consider splitting responsibilities"
+                        f"class {node.name} has {len(methods)} methods, {len(attrs)} attributes, "
+                        f"and total complexity (WMC) {wmc} (max {MAX_CLASS_METHODS}/"
+                        f"{MAX_CLASS_ATTRS}/{MAX_CLASS_WMC}) — consider splitting responsibilities"
+                    ),
+                )
+            )
+    return issues
+
+
+# ── Rule: Low Cohesion ────────────────────────────────────────────────────────
+
+
+_LCOM_EXEMPT_DECORATOR_NAMES = frozenset({"classmethod", "staticmethod"})
+
+
+def _is_instance_method(method: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """False for ``@classmethod``/``@staticmethod`` — they operate on ``cls``
+    or nothing at all, never ``self``, so they can't meaningfully connect to
+    (or split from) the rest of a class's cohesion graph. Including them
+    would flag every Pydantic model with a couple of ``@classmethod`` factory
+    methods or ``@field_validator``s as incohesive, regardless of its actual
+    instance-method cohesion — a category error, not a real signal.
+    """
+    for dec in method.decorator_list:
+        target = dec.func if isinstance(dec, ast.Call) else dec
+        name = target.id if isinstance(target, ast.Name) else getattr(target, "attr", None)
+        if name in _LCOM_EXEMPT_DECORATOR_NAMES:
+            return False
+    return True
+
+
+def _method_self_attrs(method: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
+    """Every ``self.<attr>`` *data field* *method* references, read or write
+    — excludes ``self.<name>(...)`` method calls, which are an invocation
+    relationship (this method calls that one), not shared instance state.
+    Real LCOM4 definitions specifically track field access rather than any
+    attribute reference for exactly this reason: two methods that each call
+    a different private helper aren't "connected" by shared state just
+    because both happen to reference *some* attribute of ``self``.
+    """
+    call_targets = {id(sub.func) for sub in ast.walk(method) if isinstance(sub, ast.Call)}
+    attrs: set[str] = set()
+    for sub in ast.walk(method):
+        if (
+            isinstance(sub, ast.Attribute)
+            and isinstance(sub.value, ast.Name)
+            and sub.value.id == "self"
+            and id(sub) not in call_targets
+        ):
+            attrs.add(sub.attr)
+    return attrs
+
+
+def _count_disjoint_clusters(attr_sets: list[set[str]]) -> int:
+    """LCOM4: the number of connected components in the graph where two
+    methods (by index into *attr_sets*) are linked if their ``self.<attr>``
+    sets intersect — plain union-find, no graph library needed.
+
+    A method that touches no ``self.*`` state at all (e.g. a pure helper that
+    only calls other methods, or a method operating purely on its own
+    parameters) forms its own singleton component here, since this only
+    links methods through *shared attributes*, not method-to-method calls —
+    the same simplification the reference implementation this was ported
+    from (SMART-Dal's ``smell-detector-python``) makes.
+    """
+    n = len(attr_sets)
+    parent = list(range(n))
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def union(i: int, j: int) -> None:
+        root_i, root_j = find(i), find(j)
+        if root_i != root_j:
+            parent[root_i] = root_j
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            if attr_sets[i] & attr_sets[j]:
+                union(i, j)
+
+    return len({find(i) for i in range(n)})
+
+
+_INTERFACE_BASE_NAMES = frozenset({"ABC", "Protocol"})
+
+
+def _is_interface_class(node: ast.ClassDef) -> bool:
+    """True if *node* directly subclasses ``ABC``/``(typing.)Protocol``, or
+    uses ``metaclass=ABCMeta`` — a pure interface declaration, deliberately
+    stateless by design (see e.g. ``boti_data.gateway.BackendStrategy``:
+    "Subclasses are stateless"). LCOM4 has nothing meaningful to measure when
+    there's no shared state to begin with.
+
+    This only catches the interface declaration itself, not a *concrete*
+    class implementing a broad interface defined in another file — that
+    would need cross-file type/hierarchy resolution this per-file check
+    doesn't have. A concrete Strategy-pattern implementation genuinely can
+    still read as artificially low-cohesion here; known limitation, not
+    fixed by this exemption.
+    """
+    for base in node.bases:
+        name = base.id if isinstance(base, ast.Name) else getattr(base, "attr", None)
+        if name in _INTERFACE_BASE_NAMES:
+            return True
+    for kw in node.keywords:
+        if kw.arg == "metaclass":
+            name = (
+                kw.value.id if isinstance(kw.value, ast.Name) else getattr(kw.value, "attr", None)
+            )
+            if name == "ABCMeta":
+                return True
+    return False
+
+
+def check_low_cohesion(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
+    """Flag classes whose methods split into disjoint clusters sharing no
+    ``self.*`` state (LCOM4 — Lack of Cohesion in Methods).
+
+    LCOM4 of 1 means fully cohesive: every method connects to every other
+    through shared state, directly or transitively. Anything higher means
+    the class is really two or more unrelated classes glued together.
+    ``@classmethod``/``@staticmethod`` methods are excluded entirely (see
+    ``_is_instance_method``), and classes under ``MIN_METHODS_FOR_COHESION``
+    *instance* methods are skipped — too little surface to meaningfully split.
+
+    Also skipped for classes already exempt from ``lazy-class`` (Pydantic
+    ``BaseModel``/``BaseSettings``, ``@dataclass``, ``NamedTuple``, exception
+    subclasses — see ``_lazy_class_is_exempt``): a declarative data container
+    has no explicit ``__init__`` body assigning all fields together to anchor
+    cohesion, so a handful of hand-written methods each touching only the
+    field(s) relevant to their own behavior — completely idiomatic for a
+    small value-object/dataclass hierarchy — reads as an artificial LCOM4
+    split that isn't a real "doing too many unrelated things" smell.
+
+    Pure pass-through methods (see ``_is_pure_pass_through``) are excluded
+    from the method set the same way ``@classmethod``/``@staticmethod`` are:
+    a Facade class whose methods mostly delegate to another object or a free
+    function (``def load(self, **o): return core_load.load_sync(self, o)``)
+    never touches ``self.<attr>`` in those methods, which would otherwise
+    make every one of them its own disconnected cluster regardless of how
+    cohesive the class actually is.
+
+    Also skipped for interface declarations (see ``_is_interface_class``):
+    deliberately stateless by design, so LCOM4 has nothing to measure. The
+    same reasoning applies more generally: a class where fewer than
+    ``MIN_STATEFUL_METHOD_FRACTION`` of its methods reference *any*
+    ``self.<attr>`` data field — an essentially stateless Strategy/Handler-
+    pattern implementation, common in this codebase (see e.g.
+    ``boti_data.gateway.sql_strategy.SqlAlchemyStrategy``, which implements
+    a broad ``BackendStrategy`` interface with almost no instance state) —
+    has too little state for LCOM4 to meaningfully (dis)connect; most
+    methods would otherwise become their own cluster purely because there's
+    no state to share, which measures "this class holds little data" rather
+    than "this class does unrelated things with the data it holds". A
+    fractional threshold (not an all-or-nothing "zero attrs" check) also
+    covers classes that are almost entirely stateless but for a method or
+    two referencing a sibling method as a bare callable rather than calling
+    it directly (e.g. ``asyncio.to_thread(self.other_method, ...)``), which
+    still isn't real field access.
+    """
+    issues: list[Issue] = []
+    for node in ast.walk(tree):
+        if (
+            not isinstance(node, ast.ClassDef)
+            or _lazy_class_is_exempt(node)
+            or _is_interface_class(node)
+        ):
+            continue
+        methods = [
+            n
+            for n in node.body
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and _is_instance_method(n)
+            and not _is_pure_pass_through(n)
+        ]
+        if len(methods) < MIN_METHODS_FOR_COHESION:
+            continue
+
+        attr_sets = [_method_self_attrs(method) for method in methods]
+        stateful_fraction = sum(1 for s in attr_sets if s) / len(attr_sets)
+        if stateful_fraction < MIN_STATEFUL_METHOD_FRACTION:
+            continue
+        lcom4 = _count_disjoint_clusters(attr_sets)
+        if lcom4 > MAX_CLASS_LCOM4:
+            issues.append(
+                Issue(
+                    file=filepath,
+                    line=node.lineno,
+                    severity="warning",
+                    rule="low-cohesion",
+                    package=pkg,
+                    message=(
+                        f"class {node.name} has LCOM4={lcom4} ({lcom4} method clusters "
+                        "sharing no self.* state with each other) — consider splitting "
+                        "into cohesive classes"
                     ),
                 )
             )
@@ -1527,6 +1732,27 @@ def _is_pure_delegation_call(call_node: ast.Call) -> bool:
     return all(isinstance(k.value, ast.Name) for k in call_node.keywords)
 
 
+def _is_pure_pass_through(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """True if *node*'s body is nothing but a delegating call — the same
+    shape check_pass_through_methods flags, exposed as a predicate (rather
+    than an Issue) for check_low_cohesion to reuse: a pure pass-through
+    method (e.g. ``def load(self, **o): return core_load.load_sync(self,
+    o)``) routes to a free function instead of touching ``self.<attr>``
+    directly, which is the same "extracted method takes the instance
+    explicitly" pattern already exempted in encapsulation-violation — not a
+    real cohesion signal either way, just routing.
+    """
+    body = _non_docstring_body(node)
+    if len(body) != 1:
+        return False
+    call_node = _call_from_stmt(body[0])
+    return (
+        call_node is not None
+        and not _is_super_call(call_node)
+        and _is_pure_delegation_call(call_node)
+    )
+
+
 def check_pass_through_methods(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
     """Detect methods that do nothing but delegate to another function."""
     issues: list[Issue] = []
@@ -1569,6 +1795,15 @@ def check_pass_through_methods(tree: ast.Module, filepath: Path, pkg: str) -> li
 
 # ── Check registry ────────────────────────────────────────────────────────────
 
+# check_low_cohesion is deliberately NOT included below. Its LCOM4
+# computation is correct and well-tested (see the low_cohesion_tests /
+# test_check_low_cohesion_* suite), but on this codebase's dominant style —
+# small, focused private methods taking explicit parameters rather than
+# touching self, minimal shared mutable state by design — it still produces
+# real remaining noise that direct-field-sharing LCOM4 can't distinguish
+# from genuine low cohesion without transitive call-graph reachability (a
+# materially bigger feature, not a quick fix). Held back rather than shipped
+# noisy; revisit if/when that reachability analysis is worth building.
 ALL_CHECKS: list[FileCheck] = [
     check_long_functions,
     check_complexity,

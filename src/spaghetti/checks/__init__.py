@@ -10,6 +10,7 @@ from spaghetti.checks.ast_per_file import ALL_CHECKS, check_magic_numbers
 from spaghetti.checks.package_level import (
     check_duplicate_functions_pkg,
     check_import_cycles_pkg,
+    check_module_coupling_pkg,
     check_orphan_interfaces_pkg,
     check_sync_async_twins_pkg,
 )
@@ -22,6 +23,7 @@ __all__ = [
     "PACKAGE_CHECKS",
     "check_duplicate_functions_pkg",
     "check_magic_numbers",
+    "check_module_coupling_pkg",
     "check_orphan_interfaces_pkg",
     "check_sync_async_twins_pkg",
 ]
@@ -36,5 +38,6 @@ SOURCE_CHECKS: list[SourceCheck] = [
 
 PACKAGE_CHECKS: list[PackageCheck] = [
     check_import_cycles_pkg,
+    check_module_coupling_pkg,
     check_orphan_interfaces_pkg,
 ]

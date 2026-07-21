@@ -175,7 +175,7 @@ Worth carrying forward as a standing check, not a one-time fix: a conformance su
 
 ## 9. Repo placement
 
-Recommend a **new sibling repo** (e.g. `spaghetti-rs`), not a subdirectory inside the existing `spaghetti` Python repo. This matches how this workspace already treats `boti`/`boti-data`/`boti-dask`/`tripwire`/`spaghetti` — five independent, single-toolchain repos, each with its own CI/publish pipeline — rather than introducing the first polyglot repo into that set. The shared conformance fixtures (§5) are the connective tissue between the two repos, not a shared codebase.
+Recommend a **new sibling repo** (e.g. `spaghetti-rs`), not a subdirectory inside the existing `spaghetti` Python repo. This matches how this workspace already treats `boti`/`boti-data`/`boti-dask`/`fenceline`/`spaghetti` — five independent, single-toolchain repos, each with its own CI/publish pipeline — rather than introducing the first polyglot repo into that set. The shared conformance fixtures (§5) are the connective tissue between the two repos, not a shared codebase.
 
 ## 10. Phased plan
 
@@ -194,7 +194,7 @@ Recommend a **new sibling repo** (e.g. `spaghetti-rs`), not a subdirectory insid
 All four were open questions as of the initial draft; each is now settled and drives the phasing above directly.
 
 1. **Spec of record: Python.** When the two disagree, Python's behavior is correct by definition and the Rust side has a bug, not the other way around — matching "original version is also maintained" and the CPython/PyPy precedent from §5. New rules get designed/prototyped in Python first (cheap iteration) and ported to Rust once stable.
-2. **Repo placement: new sibling repo, `spaghetti-rs`.** Matches the workspace's existing one-language-per-repo convention (`boti`/`boti-data`/`boti-dask`/`tripwire`/`spaghetti` are each standalone with their own CI/publish pipeline) rather than introducing the first polyglot repo into that set. The shared conformance fixtures (§5) are the connective tissue between the two repos, not a shared codebase.
+2. **Repo placement: new sibling repo, `spaghetti-rs`.** Matches the workspace's existing one-language-per-repo convention (`boti`/`boti-data`/`boti-dask`/`fenceline`/`spaghetti` are each standalone with their own CI/publish pipeline) rather than introducing the first polyglot repo into that set. The shared conformance fixtures (§5) are the connective tissue between the two repos, not a shared codebase.
 3. **Packaging: standalone binary only, no wheel.** `cargo install`/prebuilt GitHub Release binaries (§8.1) is the full initial scope. The `maturin`-wrapped `pip install spaghetti-detector[native]` wheel (§8.2) is explicitly deferred, not a committed stretch goal — build it only if actual demand for a `pip`-native install path shows up, rather than speculatively.
 4. **No specific performance bottleneck driving this — the native binary itself is the win.** There's no external codebase/CI scan-time pain point to benchmark against. This means Phase 0's spike is scoped to **prove correctness** (does `ruff_python_parser` parse this workspace's real files cleanly; does the `similar`-crate ratio track `difflib`'s closely enough) rather than to hit a speed target — no benchmarking harness is needed before Phase 1. Performance validation can happen naturally once the port is functionally complete, as a "how much faster did we actually get" writeup rather than a gate.
 

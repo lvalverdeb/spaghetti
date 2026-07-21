@@ -13,10 +13,15 @@ from spaghetti.ast_helpers import (
     _line_count,
     _walk_with_class_context,
 )
-from spaghetti.config import MIN_TWIN_FUNCTION_LINES
+from spaghetti.config import MAX_MODULE_FAN_IN, MAX_MODULE_FAN_OUT, MIN_TWIN_FUNCTION_LINES
 from spaghetti.models import Issue, _display_path
 
-__all__ = ["check_import_cycles_pkg", "check_duplicate_functions_pkg", "check_sync_async_twins_pkg"]
+__all__ = [
+    "check_import_cycles_pkg",
+    "check_duplicate_functions_pkg",
+    "check_module_coupling_pkg",
+    "check_sync_async_twins_pkg",
+]
 
 
 # ── Import Cycles (real cycle detection via DFS) ─────────────────────────────
@@ -88,15 +93,26 @@ def _module_level_imports(tree: ast.Module) -> list[ast.Import | ast.ImportFrom]
     return found
 
 
-def check_import_cycles_pkg(pkg_name: str, files: list[tuple[Path, ast.Module]]) -> list[Issue]:
-    """Builds the real intra-package import graph and finds actual cycles via DFS."""
-    prefix = _package_prefix(pkg_name)
-    if not prefix:
-        return []
-    stem = prefix.rstrip(".")
+def _build_import_graph(
+    pkg_name: str, files: list[tuple[Path, ast.Module]]
+) -> tuple[dict[str, set[str]], dict[str, Path]]:
+    """The real intra-package import graph: module -> set of modules it
+    imports, plus module -> its file. Shared by check_import_cycles_pkg and
+    check_module_coupling_pkg so both see identical import resolution
+    (relative imports, package-prefix resolution, TYPE_CHECKING exclusion)
+    instead of duplicating it.
 
+    A module only appears as a ``graph`` key if it has at least one
+    qualifying import; a module with zero intra-package imports is still
+    present in ``file_for_module``, just absent from ``graph`` (equivalent
+    to an empty adjacency set — callers use ``graph.get(module, ...)``).
+    """
+    prefix = _package_prefix(pkg_name)
     graph: dict[str, set[str]] = defaultdict(set)
     file_for_module: dict[str, Path] = {}
+    if not prefix:
+        return graph, file_for_module
+    stem = prefix.rstrip(".")
 
     for filepath, tree in files:
         module, package = _module_and_package_for(pkg_name, filepath)
@@ -110,6 +126,15 @@ def check_import_cycles_pkg(pkg_name: str, files: list[tuple[Path, ast.Module]])
                 for alias in node.names:
                     if alias.name == stem or alias.name.startswith(stem + "."):
                         graph[module].add(alias.name)
+
+    return graph, file_for_module
+
+
+def check_import_cycles_pkg(pkg_name: str, files: list[tuple[Path, ast.Module]]) -> list[Issue]:
+    """Finds actual import cycles via DFS over the real intra-package import graph."""
+    graph, file_for_module = _build_import_graph(pkg_name, files)
+    if not file_for_module:
+        return []
 
     issues: list[Issue] = []
     visited: set[str] = set()
@@ -156,6 +181,52 @@ def check_import_cycles_pkg(pkg_name: str, files: list[tuple[Path, ast.Module]])
         if module not in visited:
             dfs(module)
 
+    return issues
+
+
+def check_module_coupling_pkg(pkg_name: str, files: list[tuple[Path, ast.Module]]) -> list[Issue]:
+    """Flags a module as an overloaded "hub" — reusing the same import graph
+    as check_import_cycles_pkg, but measuring fan-in/fan-out instead of
+    cycles.
+
+    Only flagged when *both* fan-in and fan-out exceed their thresholds:
+    high fan-in alone is often just a legitimately central util module (many
+    things use it, by design), and high fan-out alone is often just a
+    legitimately thin orchestrator (it wires many things together, by
+    design). Both-high together is the real signal — a module that's both
+    heavily depended-on and heavily dependent, so a change anywhere near it
+    tends to ripple.
+    """
+    graph, file_for_module = _build_import_graph(pkg_name, files)
+    if not file_for_module:
+        return []
+
+    fan_in: dict[str, int] = defaultdict(int)
+    for imports in graph.values():
+        for target in imports:
+            fan_in[target] += 1
+
+    issues: list[Issue] = []
+    for module, filepath in file_for_module.items():
+        module_fan_out = len(graph.get(module, ()))
+        module_fan_in = fan_in.get(module, 0)
+        if module_fan_in > MAX_MODULE_FAN_IN and module_fan_out > MAX_MODULE_FAN_OUT:
+            issues.append(
+                Issue(
+                    file=filepath,
+                    line=1,
+                    severity="warning",
+                    rule="high-coupling",
+                    package=pkg_name,
+                    message=(
+                        f"module {module} has fan-in={module_fan_in} and "
+                        f"fan-out={module_fan_out} (max {MAX_MODULE_FAN_IN}/{MAX_MODULE_FAN_OUT}) "
+                        "— other modules depend on it heavily and it depends on other "
+                        "modules heavily; consider splitting it or inverting some "
+                        "dependencies (Dependency Inversion Principle)"
+                    ),
+                )
+            )
     return issues
 
 

@@ -317,7 +317,7 @@ The plan output includes:
 - Generated code (`__pycache__`, `.pyc`)
 - Docstring quality or coverage
 - Naming conventions (use `ruff` for that)
-- Security vulnerabilities (separate `tripwire` tool)
+- Security vulnerabilities (separate `fenceline` tool)
 - Performance characteristics
 - Runtime behavior or correctness
 

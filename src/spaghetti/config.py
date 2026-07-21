@@ -72,6 +72,35 @@ MIN_TWIN_FUNCTION_LINES = 4
 MAX_PUBLIC_SYMBOLS = 15
 MIN_CLASS_METHODS = 2
 
+# Weighted Methods per Class: sum of each method's own cyclomatic complexity.
+# A class can stay under MAX_CLASS_METHODS/MAX_CLASS_ATTRS yet still be a god
+# class if its few methods are individually complex enough.
+MAX_CLASS_WMC = 50
+
+# LCOM4: number of connected components in the graph where two methods are
+# linked if they share a self.<attr> reference. 1 means fully cohesive: every
+# method connects to every other through shared state, directly or
+# transitively. Anything higher is a genuine split into unrelated clusters.
+MAX_CLASS_LCOM4 = 1
+MIN_METHODS_FOR_COHESION = 3
+
+# A class where fewer than this fraction of its methods reference any
+# self.<attr> at all is treated as "essentially stateless" and skipped
+# entirely — common for Strategy/Handler-pattern implementations (little to
+# no shared instance state by design). A hard "zero state" cutoff misses
+# classes that are almost entirely stateless but for a method or two
+# referencing a sibling method as a bare callable (e.g.
+# asyncio.to_thread(self.other_method, ...)) rather than genuine field
+# access; a fractional threshold catches those too without hand-listing
+# every such idiom.
+MIN_STATEFUL_METHOD_FRACTION = 0.2
+
+# A module is only flagged as an overloaded "hub" when it's both heavily
+# depended-on (fan-in) and heavily dependent (fan-out) — either alone is
+# often just a legitimately central util or a legitimately thin orchestrator.
+MAX_MODULE_FAN_IN = 8
+MAX_MODULE_FAN_OUT = 8
+
 # By how much a warning-level threshold is multiplied to decide when a rule
 # escalates its own finding to "error" instead (e.g. high-complexity,
 # god-class) — one shared factor instead of each rule picking its own.

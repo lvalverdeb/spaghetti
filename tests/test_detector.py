@@ -47,6 +47,7 @@ from spaghetti.checks.ast_per_file import (
     check_layer_violations,
     check_lazy_class,
     check_long_functions,
+    check_low_cohesion,
     check_magic_numbers,
     check_magic_strings,
     check_message_chains,
@@ -61,7 +62,7 @@ from spaghetti.checks.ast_per_file import (
     check_untyped_dicts,
     check_unused_imports,
 )
-from spaghetti.checks.package_level import check_import_cycles_pkg
+from spaghetti.checks.package_level import check_import_cycles_pkg, check_module_coupling_pkg
 from spaghetti.checks.text_per_file import check_long_file, check_todo_markers
 from spaghetti.cli import (
     _load_packages_from_config,
@@ -71,10 +72,13 @@ from spaghetti.cli import (
 )
 from spaghetti.config import (
     MAX_CLASS_METHODS,
+    MAX_CLASS_WMC,
     MAX_FILE_LINES,
     MAX_FUNC_PARAMS,
     MAX_FUNCTION_LINES,
+    MAX_MODULE_FAN_IN,
     MAX_NESTING_DEPTH,
+    MIN_METHODS_FOR_COHESION,
 )
 from spaghetti.models import Issue, ScanConfig, ScanResult
 from spaghetti.scoring import (
@@ -1138,6 +1142,273 @@ def test_check_god_class_clean():
     assert issues == []
 
 
+def test_check_god_class_flags_high_wmc_with_few_methods():
+    # A class can stay well under MAX_CLASS_METHODS/MAX_CLASS_ATTRS yet still
+    # be a god class if its handful of methods are each individually complex.
+    lines = ["class ComplexClass:", "    def m1(self, x) -> None:"]
+    for i in range(MAX_CLASS_WMC + 2):
+        lines.append(f"        if x == {i}:")
+        lines.append("            pass")
+    source = "\n".join(lines) + "\n"
+    issues = check_god_class(_parse(source), Path("f.py"), "pkg")
+    assert len(issues) == 1
+    assert "WMC" in issues[0].message
+
+
+# ── Low Cohesion ─────────────────────────────────────────────────────────────
+
+
+def test_check_low_cohesion_flags_disjoint_clusters():
+    source = (
+        "class Foo:\n"
+        "    def __init__(self):\n"
+        "        self.a = 1\n"
+        "        self.b = 2\n"
+        "    def use_a(self):\n"
+        "        return self.a\n"
+        "    def use_b(self):\n"
+        "        return self.b\n"
+        "    def unrelated(self):\n"
+        "        return 42\n"
+    )
+    issues = check_low_cohesion(_parse(source), Path("f.py"), "pkg")
+    assert len(issues) == 1
+    assert issues[0].rule == "low-cohesion"
+    assert "LCOM4=2" in issues[0].message
+
+
+def test_check_low_cohesion_allows_fully_connected_class():
+    source = (
+        "class Foo:\n"
+        "    def __init__(self):\n"
+        "        self.a = 1\n"
+        "    def use_a(self):\n"
+        "        return self.a\n"
+        "    def also_use_a(self):\n"
+        "        return self.a + 1\n"
+    )
+    issues = check_low_cohesion(_parse(source), Path("f.py"), "pkg")
+    assert issues == []
+
+
+def test_check_low_cohesion_skips_small_classes():
+    # Below MIN_METHODS_FOR_COHESION — too little surface to meaningfully split.
+    source = (
+        "class Foo:\n"
+        "    def a(self):\n"
+        "        return self.x\n"
+        "    def b(self):\n"
+        "        return self.y\n"
+    )
+    assert MIN_METHODS_FOR_COHESION > 2
+    issues = check_low_cohesion(_parse(source), Path("f.py"), "pkg")
+    assert issues == []
+
+
+def test_check_low_cohesion_allows_non_class():
+    source = "def f():\n    pass\n"
+    issues = check_low_cohesion(_parse(source), Path("f.py"), "pkg")
+    assert issues == []
+
+
+def test_check_low_cohesion_ignores_classmethods_and_staticmethods():
+    # A Pydantic-style config class with a couple of @classmethod factories
+    # and a @staticmethod helper must not be flagged just because those
+    # never touch self — they're excluded from the cohesion graph entirely,
+    # not counted as disconnected clusters.
+    source = (
+        "class Config:\n"
+        "    def __init__(self):\n"
+        "        self.a = 1\n"
+        "    def use_a(self):\n"
+        "        return self.a\n"
+        "    @classmethod\n"
+        "    def from_env(cls):\n"
+        "        return cls()\n"
+        "    @classmethod\n"
+        "    def from_settings(cls, settings):\n"
+        "        return cls()\n"
+        "    @staticmethod\n"
+        "    def validate(value):\n"
+        "        return value\n"
+    )
+    issues = check_low_cohesion(_parse(source), Path("f.py"), "pkg")
+    assert issues == []
+
+
+def test_check_low_cohesion_allows_dataclass_value_object():
+    # A small @dataclass hierarchy where each method touches only the
+    # field(s) relevant to its own behavior is idiomatic, not a real
+    # "doing too many unrelated things" smell — dataclasses have no
+    # explicit __init__ body assigning fields together to anchor cohesion,
+    # so this shape would otherwise look artificially disjoint.
+    source = (
+        "@dataclass(frozen=True)\n"
+        "class TrueExpr(Expr):\n"
+        "    def is_trivial(self) -> bool:\n"
+        "        return True\n"
+        "    def mask(self, df):\n"
+        "        return df.map_partitions(lambda p: p)\n"
+        "    def to_sqlalchemy_condition(self, model):\n"
+        "        return true()\n"
+    )
+    issues = check_low_cohesion(_parse(source), Path("f.py"), "pkg")
+    assert issues == []
+
+
+def test_check_low_cohesion_ignores_pure_pass_through_methods():
+    # A Facade class whose methods delegate to a free function taking the
+    # instance explicitly (e.g. DataGateway.load() -> core_load.load_sync(
+    # self, options)) never touches self.<attr> in those methods — that's
+    # routing, not a real cohesion signal, so it shouldn't count them as
+    # disconnected clusters.
+    source = (
+        "class Gateway:\n"
+        "    def __init__(self):\n"
+        "        self.a = 1\n"
+        "    def use_a(self):\n"
+        "        return self.a\n"
+        "    def load(self, **options):\n"
+        "        return core_load.load_sync(self, options)\n"
+        "    def aload(self, **options):\n"
+        "        return core_load.load_async(self, options)\n"
+        "    def semi_join(self, other):\n"
+        "        return core_load.semi_join_sync(self, other)\n"
+    )
+    issues = check_low_cohesion(_parse(source), Path("f.py"), "pkg")
+    assert issues == []
+
+
+def test_check_low_cohesion_ignores_abc_interface():
+    # A deliberately stateless interface declaration (ABC/Protocol) has
+    # nothing for LCOM4 to meaningfully measure — each @abstractmethod
+    # necessarily touches no shared state since there's no state at all.
+    source = (
+        "class BackendStrategy(ABC):\n"
+        "    @abstractmethod\n"
+        "    def build_config(self, **kwargs): ...\n"
+        "    @abstractmethod\n"
+        "    def build_resource(self, config): ...\n"
+        "    @abstractmethod\n"
+        "    def load_structured_sync(self, ctx): ...\n"
+        "    @abstractmethod\n"
+        "    def load_configured_sync(self, ctx): ...\n"
+    )
+    issues = check_low_cohesion(_parse(source), Path("f.py"), "pkg")
+    assert issues == []
+
+
+def test_check_low_cohesion_ignores_protocol_interface():
+    source = (
+        "class Sink(Protocol):\n"
+        "    def write(self, frame): ...\n"
+        "    def awrite(self, frame): ...\n"
+        "    def close(self): ...\n"
+        "    def aclose(self): ...\n"
+    )
+    issues = check_low_cohesion(_parse(source), Path("f.py"), "pkg")
+    assert issues == []
+
+
+def test_check_low_cohesion_ignores_stateless_strategy_class():
+    # A concrete Strategy-pattern implementation with zero instance state
+    # (no self.<attr> anywhere) has nothing for LCOM4 to measure — every
+    # method would otherwise become its own cluster purely because there's
+    # no state to share, which isn't a real cohesion problem.
+    source = (
+        "class SqlAlchemyStrategy(BackendStrategy):\n"
+        "    def build_config(self, **kwargs):\n"
+        "        return SqlDatabaseConfig(**kwargs)\n"
+        "    def build_resource(self, config):\n"
+        "        return build_sql_resource(config)\n"
+        "    def load_structured_sync(self, ctx):\n"
+        "        return self._aload_sql(ctx)\n"
+        "    def supports_in_chunk_hinting(self):\n"
+        "        return True\n"
+    )
+    issues = check_low_cohesion(_parse(source), Path("f.py"), "pkg")
+    assert issues == []
+
+
+def test_check_low_cohesion_ignores_mostly_stateless_class():
+    # A near-hard-zero case: almost every method is genuinely stateless,
+    # but one references a sibling method as a bare callable (the
+    # asyncio.to_thread(self.other_method, ...) idiom) rather than field
+    # access — a hard "zero attrs" check would miss this; the fractional
+    # threshold still exempts it since 1-in-6 is well under
+    # MIN_STATEFUL_METHOD_FRACTION.
+    # Two-statement bodies here deliberately, so none of these accidentally
+    # qualify as pure-pass-through (and get excluded from the method count
+    # entirely) the way a single `return f(x)` statement would.
+    source = (
+        "class SqlAlchemyStrategy(BackendStrategy):\n"
+        "    def build_config(self, **kwargs):\n"
+        "        cfg = SqlDatabaseConfig(**kwargs)\n"
+        "        return cfg\n"
+        "    def build_resource(self, config):\n"
+        "        resource = build_sql_resource(config)\n"
+        "        return resource\n"
+        "    def load_structured_sync(self, ctx):\n"
+        "        result = execute(ctx)\n"
+        "        return result\n"
+        "    async def load_structured_async(self, ctx):\n"
+        "        return await asyncio.to_thread(self.load_structured_sync, ctx)\n"
+        "    def supports_in_chunk_hinting(self):\n"
+        "        return True\n"
+        "    def chunk_hint(self, ctx):\n"
+        "        return None\n"
+    )
+    issues = check_low_cohesion(_parse(source), Path("f.py"), "pkg")
+    assert issues == []
+
+
+def test_check_low_cohesion_ignores_method_calls_as_shared_state():
+    # self.<name>(...) is a method *call* (an invocation relationship), not
+    # a shared data field — two methods that each call a different private
+    # helper aren't cohesive just because both reference some self.<attr>.
+    # Without this distinction, LoadPlanner-shaped classes (many small
+    # methods, each calling a different differently-named private helper,
+    # no shared data fields at all) would look artificially disjoint.
+    source = (
+        "class LoadPlanner:\n"
+        "    def plan_a(self, ctx):\n"
+        "        return self._resolve_a(ctx)\n"
+        "    def plan_b(self, ctx):\n"
+        "        return self._resolve_b(ctx)\n"
+        "    def plan_c(self, ctx):\n"
+        "        return self._resolve_c(ctx)\n"
+        "    def _resolve_a(self, ctx):\n"
+        "        return ctx\n"
+        "    def _resolve_b(self, ctx):\n"
+        "        return ctx\n"
+        "    def _resolve_c(self, ctx):\n"
+        "        return ctx\n"
+    )
+    issues = check_low_cohesion(_parse(source), Path("f.py"), "pkg")
+    assert issues == []
+
+
+def test_check_low_cohesion_still_flags_real_split_with_method_calls_present():
+    # Sanity check: excluding method-call targets from the attr graph must
+    # not swallow genuine hits — a class with two real disjoint data-field
+    # clusters is still flagged even when some methods also call helpers.
+    source = (
+        "class Foo:\n"
+        "    def __init__(self):\n"
+        "        self.a = 1\n"
+        "        self.b = 2\n"
+        "    def use_a(self):\n"
+        "        self._log(self.a)\n"
+        "    def use_b(self):\n"
+        "        self._log(self.b)\n"
+        "    def _log(self, value):\n"
+        "        return value\n"
+    )
+    issues = check_low_cohesion(_parse(source), Path("f.py"), "pkg")
+    assert len(issues) == 1
+    assert "LCOM4=2" in issues[0].message
+
+
 # ── Layer Violations ─────────────────────────────────────────────────────────
 
 
@@ -1427,6 +1698,97 @@ def test_check_import_cycles_pkg_clean(tmp_path: Path):
     ds.ALLOWED_IMPORT_PREFIXES[pkg_name] = [f"{pkg_name}."]
     try:
         issues = check_import_cycles_pkg(pkg_name, files)
+        assert issues == []
+    finally:
+        ds.PACKAGES = original_packages
+        ds.ALLOWED_IMPORT_PREFIXES.update(original_prefixes)
+
+
+# ── Cross-File: Module Coupling ─────────────────────────────────────────────
+
+
+def _files_for_pkg(pkg_dir: Path) -> list[tuple[Path, ast.Module]]:
+    files = []
+    for py_file in sorted(pkg_dir.rglob("*.py")):
+        source = py_file.read_text()
+        tree = ast.parse(source, filename=str(py_file))
+        files.append((py_file, tree))
+    return files
+
+
+def test_check_module_coupling_pkg_flags_hub_module(tmp_path: Path):
+    pkg_dir = tmp_path / "hub_pkg"
+    pkg_dir.mkdir()
+    (pkg_dir / "__init__.py").write_text("")
+
+    n = MAX_MODULE_FAN_IN + 1  # also > MAX_MODULE_FAN_OUT since both are equal
+    for i in range(n):
+        (pkg_dir / f"dep{i}.py").write_text("x = 1\n")
+    (pkg_dir / "hub.py").write_text(
+        "\n".join(f"from .dep{i} import x as x{i}" for i in range(n)) + "\n"
+    )
+    for i in range(n):
+        (pkg_dir / f"user{i}.py").write_text("from .hub import hub\n")
+
+    pkg_name = "hub_pkg"
+    files = _files_for_pkg(pkg_dir)
+
+    original_packages = ds.PACKAGES
+    original_prefixes = ds.ALLOWED_IMPORT_PREFIXES.copy()
+    ds.PACKAGES = {pkg_name: pkg_dir}
+    ds.ALLOWED_IMPORT_PREFIXES[pkg_name] = [f"{pkg_name}."]
+    try:
+        issues = check_module_coupling_pkg(pkg_name, files)
+        assert len(issues) == 1
+        assert issues[0].rule == "high-coupling"
+        assert f"{pkg_name}.hub" in issues[0].message
+    finally:
+        ds.PACKAGES = original_packages
+        ds.ALLOWED_IMPORT_PREFIXES.update(original_prefixes)
+
+
+def test_check_module_coupling_pkg_allows_high_fan_in_alone(tmp_path: Path):
+    # Sanity check: fan-in alone (a legitimately central util everyone
+    # imports) must not trigger — only both fan-in AND fan-out high does.
+    pkg_dir = tmp_path / "util_pkg"
+    pkg_dir.mkdir()
+    (pkg_dir / "__init__.py").write_text("")
+    (pkg_dir / "util.py").write_text("x = 1\n")
+    n = MAX_MODULE_FAN_IN + 1
+    for i in range(n):
+        (pkg_dir / f"user{i}.py").write_text("from .util import x\n")
+
+    pkg_name = "util_pkg"
+    files = _files_for_pkg(pkg_dir)
+
+    original_packages = ds.PACKAGES
+    original_prefixes = ds.ALLOWED_IMPORT_PREFIXES.copy()
+    ds.PACKAGES = {pkg_name: pkg_dir}
+    ds.ALLOWED_IMPORT_PREFIXES[pkg_name] = [f"{pkg_name}."]
+    try:
+        issues = check_module_coupling_pkg(pkg_name, files)
+        assert issues == []
+    finally:
+        ds.PACKAGES = original_packages
+        ds.ALLOWED_IMPORT_PREFIXES.update(original_prefixes)
+
+
+def test_check_module_coupling_pkg_clean(tmp_path: Path):
+    pkg_dir = tmp_path / "clean_pkg"
+    pkg_dir.mkdir()
+    (pkg_dir / "__init__.py").write_text("")
+    (pkg_dir / "a.py").write_text("x = 1\n")
+    (pkg_dir / "b.py").write_text("from .a import x\n")
+
+    pkg_name = "clean_pkg"
+    files = _files_for_pkg(pkg_dir)
+
+    original_packages = ds.PACKAGES
+    original_prefixes = ds.ALLOWED_IMPORT_PREFIXES.copy()
+    ds.PACKAGES = {pkg_name: pkg_dir}
+    ds.ALLOWED_IMPORT_PREFIXES[pkg_name] = [f"{pkg_name}."]
+    try:
+        issues = check_module_coupling_pkg(pkg_name, files)
         assert issues == []
     finally:
         ds.PACKAGES = original_packages
