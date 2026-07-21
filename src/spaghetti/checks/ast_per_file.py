@@ -999,30 +999,43 @@ def check_excessive_decorators(tree: ast.Module, filepath: Path, pkg: str) -> li
 
 
 def check_magic_numbers(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
-    """Flag numeric literals other than 0, 1, or -1. ``__init__`` methods are skipped."""
+    """Flag numeric literals other than 0, 1, or -1 in a function's body.
+
+    Skips the function's own signature — a default parameter value (e.g.
+    ``base_delay: float = 0.5``) is already named by the parameter itself —
+    and skips a literal passed as a call's keyword argument (e.g.
+    ``stacklevel=2``), since the keyword name documents it the same way a
+    named constant would. ``__init__`` methods are skipped entirely.
+    """
     _ALLOWED = {-1, 0, 1}
     issues: list[Issue] = []
 
     def _scan_func(func: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
         if func.name == "__init__":
             return
-        for child in ast.walk(func):
-            if isinstance(child, ast.Constant) and isinstance(child.value, (int, float)):
-                if child.value not in _ALLOWED:
-                    issues.append(
-                        Issue(
-                            file=filepath,
-                            line=child.lineno,
-                            severity="info",
-                            rule="magic-number",
-                            package=pkg,
-                            message=(
-                                f"magic number {child.value!r} — extract to a named constant, "
-                                "or an enum.IntEnum if it's one of a fixed set of status/"
-                                "category codes"
-                            ),
-                        )
+        keyword_value_ids = {
+            id(kw.value) for stmt in func.body for kw in ast.walk(stmt) if isinstance(kw, ast.keyword)
+        }
+        for stmt in func.body:
+            for child in ast.walk(stmt):
+                if not (isinstance(child, ast.Constant) and isinstance(child.value, (int, float))):
+                    continue
+                if id(child) in keyword_value_ids or child.value in _ALLOWED:
+                    continue
+                issues.append(
+                    Issue(
+                        file=filepath,
+                        line=child.lineno,
+                        severity="info",
+                        rule="magic-number",
+                        package=pkg,
+                        message=(
+                            f"magic number {child.value!r} — extract to a named constant, "
+                            "or an enum.IntEnum if it's one of a fixed set of status/"
+                            "category codes"
+                        ),
                     )
+                )
 
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):

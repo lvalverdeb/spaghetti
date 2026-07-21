@@ -1697,6 +1697,25 @@ def test_check_magic_numbers_no_flag_in_string():
     assert issues == []
 
 
+def test_check_magic_numbers_skips_keyword_argument():
+    source = "def f():\n    warnings.warn('x', UserWarning, stacklevel=2)\n"
+    issues = check_magic_numbers(_parse(source), Path("f.py"), "pkg")
+    assert issues == []
+
+
+def test_check_magic_numbers_skips_default_parameter_value():
+    source = "def f(max_attempts: int = 3, base_delay: float = 0.5):\n    pass\n"
+    issues = check_magic_numbers(_parse(source), Path("f.py"), "pkg")
+    assert issues == []
+
+
+def test_check_magic_numbers_still_flags_positional_argument():
+    source = "def f():\n    do_thing(42)\n"
+    issues = check_magic_numbers(_parse(source), Path("f.py"), "pkg")
+    assert len(issues) == 1
+    assert "42" in issues[0].message
+
+
 # ── Rule: magic-string ───────────────────────────────────────────────────────
 
 
