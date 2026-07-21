@@ -7,7 +7,7 @@
 
 ## 1. Purpose
 
-The spaghetti detector is a workspace-level quality gate. It scans Python packages for anti-patterns that indicate structural decay — long functions, deep nesting, high complexity, god-classes, god-modules, sync/async duplication, circular imports, copy-pasted function bodies, mutable defaults, shared mutable state, architectural layer violations, dead code, message chains, excessive decorators, magic numbers, missing else branches, lazy classes, and deep inheritance. It produces a severity-weighted health score (0–100) with letter grades (A–F) and exits with a non-zero code when errors or warnings are present, making it suitable for CI gating.
+The spaghetti detector is a workspace-level quality gate. It scans Python packages for anti-patterns that indicate structural decay — long functions, deep nesting, high complexity, god-classes (including excessive total complexity, not just method/attribute counts), god-modules, sync/async duplication, circular imports, copy-pasted function bodies, mutable defaults, shared mutable state, architectural layer violations, dead code, message chains, excessive decorators, magic numbers, missing else branches, lazy classes, deep inheritance, pure pass-through methods, overloaded "hub" modules, and speculative-generality interfaces with a single implementation. It produces a severity-weighted health score (0–100) with letter grades (A–F) and exits with a non-zero code when errors or warnings are present, making it suitable for CI gating.
 
 ## 2. Architecture
 
@@ -21,7 +21,7 @@ The spaghetti detector is a workspace-level quality gate. It scans Python packag
    ┌───────────────┐                    ┌──────────────────┐
     │  Per-File     │                    │  Per-Package     │
     │  AST Checks   │                    │  Cross-File      │
-    │  (31 rules)   │                    │  Checks (3 rules)│
+    │  (31 rules)   │                    │  Checks (5 rules)│
    └───────┬───────┘                    └────────┬─────────┘
            │                                     │
            ▼                                     ▼
@@ -72,7 +72,7 @@ Exit codes: 0 = clean, 1 = warnings present, 2 = errors present.
 | `swallowed-exception` | warning | — | `except: pass` or `except: ...` blocks |
 | `duplicate-branch` | warning | — | if/else blocks with structurally identical bodies |
 | `encapsulation-violation` | info | — | Accessing private `_name` through non-self/cls |
-| `god-class` | warning/error | >25 methods (error >37), >20 attrs (error >30) | Classes with too many methods or attributes |
+| `god-class` | warning/error | >25 methods (error >37), >20 attrs (error >30), or WMC >50 (error >75) | Classes with too many methods/attributes, or too much total complexity (WMC — sum of each method's own cyclomatic complexity) even if method/attribute counts alone stay under threshold |
 | `layer-violation` | error | — | Imports forbidden by architectural layer rules |
 | `transport-in-library` | error | — | Library packages importing transport frameworks |
 | `potential-circular-import` | warning | — | Child importing parent within same package |
@@ -90,6 +90,7 @@ Exit codes: 0 = clean, 1 = warnings present, 2 = errors present.
 | `missing-else` | info | — | `if` blocks with 2+ statements but no `else`/`elif` |
 | `lazy-class` | info | <2 methods | Classes with 0 or 1 methods — prefer a plain function or `@dataclass` |
 | `deep-inheritance` | warning | ≥4 depth | Effective inheritance chain depth exceeding 4 levels |
+| `pass-through-method` | info | — | A method whose body is nothing but a delegating call (`return other.method(*args, **kwargs)`), with every argument forwarded unchanged |
 
 ### 3.2 Per-File Source-Text Checks (2 rules)
 
@@ -106,17 +107,21 @@ Exit codes: 0 = clean, 1 = warnings present, 2 = errors present.
 
 > `syntax-error` is emitted before any `ALL_CHECKS` run. When a file has a syntax error, no other AST rules are applied to it.
 
-### 3.4 Per-Package Cross-File Checks (3 rules)
+### 3.4 Per-Package Cross-File Checks (5 rules)
 
 | Rule | Severity | Threshold | What It Catches |
 |------|----------|-----------|-----------------|
 | `import-cycle` | error | — | Real circular import cycles (DFS on full import graph) |
+| `high-coupling` | warning | fan-in >8 **and** fan-out >8 | A module that's both heavily depended-on and heavily dependent — an overloaded "hub". Reuses `import-cycle`'s own import graph; flags only when both directions exceed threshold, since either alone is often a legitimately central util or a legitimately thin orchestrator |
+| `orphan-interface` | info | exactly 1 implementation | An abstract class with exactly one concrete implementation — Speculative Generality: the abstraction adds mental overhead without providing polymorphic value |
 | `duplicate-function-body` | warning | ≥5 identical lines | Byte-for-byte identical function bodies across files |
 | `sync-async-duplication` | warning | ≥60% text similarity | Sync/async twin pairs (e.g. `load`/`aload`) |
 
+> A sixth cross-file metric, `low-cohesion` (LCOM4 — Lack of Cohesion in Methods), is implemented and tested but intentionally **not enabled by default** — not part of `PACKAGE_CHECKS`. Direct-field-sharing LCOM4 can't distinguish genuine low cohesion from this codebase's dominant style of small, parameter-passing private methods with minimal shared instance state, without transitive call-graph reachability analysis it doesn't have. See `check_low_cohesion`'s own docstring in `checks/ast_per_file.py` for the full reasoning and the six false-positive categories it already excludes (classmethods/staticmethods, dataclass/Pydantic/exception value objects, pure pass-throughs, ABC/Protocol interfaces, method-call vs. field-access, and a stateful-method-fraction threshold).
+
 ### 3.5 Canonical AST Patterns for Tangled Code Detection
 
-The detector's rules are grounded in **8 canonical AST structural patterns** that characterize tangled code. Each pattern maps to one or more detector rules:
+The detector's rules are grounded in **9 canonical AST structural patterns** that characterise tangled code. Each pattern maps to one or more detector rules:
 
 #### Pattern 1: Deeply Nested Conditional (Arrow Anti-Pattern)
 
@@ -150,7 +155,7 @@ def process(data):
 
 **AST Markers:** A `ClassDef` or module root containing an excessive number of `FunctionDef` / `AsyncFunctionDef` child nodes, or a module with too many public symbols.
 
-**Detection Goal:** Catches massive components that try to manage everything. Class threshold: >25 methods (error at >37), >20 attributes (error at >30). Module threshold: >15 public symbols.
+**Detection Goal:** Catches massive components that try to manage everything. Class threshold: >25 methods (error at >37), >20 attributes (error at >30), or WMC (total cyclomatic complexity summed across a class's methods) >50 (error at >75) — a class can stay under the method/attribute counts yet still be a god class if its few methods are individually complex enough. Module threshold: >15 public symbols.
 
 **Covered by:** `god-class`, `god-module`, `long-file`
 
@@ -214,8 +219,17 @@ class Counter:
 | Missing else/elif branch | `missing-else` | info | — | `if` blocks with 2+ statements but no `else`/`elif` |
 | Class with <2 methods | `lazy-class` | info | — | Classes replaceable by a plain function or `@dataclass` |
 | Deep inheritance hierarchy | `deep-inheritance` | warning | depth ≥ 4 | Effective inheritance chain depth exceeding 4 levels |
+| Pure delegating method | `pass-through-method` | info | — | A method whose body is nothing but a call forwarding every argument unchanged to another object/function |
 
-**Covered by:** `dead-code`, `message-chain`, `excessive-decorators`, `magic-number`, `missing-else`, `lazy-class`, `deep-inheritance`
+**Covered by:** `dead-code`, `message-chain`, `excessive-decorators`, `magic-number`, `missing-else`, `lazy-class`, `deep-inheritance`, `pass-through-method`
+
+#### Pattern 9: Coupling & Speculative Generality
+
+**AST Markers:** Two distinct shapes, both requiring whole-package (not single-file) analysis: (a) a module whose intra-package import graph shows both high in-degree and high out-degree; (b) an abstract class (`ABC`/`abstractmethod` base) with exactly one concrete subclass across the package.
+
+**Detection Goal:** Catches structural problems that only show up once you can see across every file, not from tangled control flow within one function. (a) A module that's simultaneously depended-on by many others *and* dependent on many others is a fragile hub — changes near it tend to ripple both ways. (b) An abstraction built for polymorphism it never actually needs (Speculative Generality) adds indirection without paying for itself.
+
+**Covered by:** `high-coupling` (fan-in >8 and fan-out >8), `orphan-interface` (exactly 1 implementation)
 
 ## 4. Layer Violation Rules
 
@@ -256,7 +270,7 @@ Applies to the flagged line and the line directly above it. Suppressed findings 
 | `--exclude` | — | Path substrings to exclude |
 | `--min-duplicate-lines` | 5 | Minimum function length for duplication checks |
 | `--twin-similarity` | 0.6 | Minimum similarity ratio for sync/async twin detection |
-| `--plan` | off | Output a prioritized remediation plan instead of the standard report |
+| `--plan` | off | Output a prioritised remediation plan instead of the standard report |
 
 ### YAML Config Format
 
@@ -319,7 +333,7 @@ The plan output includes:
 - Naming conventions (use `ruff` for that)
 - Security vulnerabilities (separate `fenceline` tool)
 - Performance characteristics
-- Runtime behavior or correctness
+- Runtime behaviour or correctness
 
 ## 9. Extensibility
 
@@ -336,13 +350,13 @@ To add a new rule:
 
 ## 10. Remediation Effort Estimates
 
-The `--plan` mode uses effort estimates (1–5 scale) combined with severity weights to prioritize fixes:
+The `--plan` mode uses effort estimates (1–5 scale) combined with severity weights to prioritise fixes:
 
 | Effort | Scale | Example Rules |
 |--------|-------|---------------|
 | trivial (0.5) | Delete a line, add a type hint | `unused-import`, `dead-code`, `magic-number`, `missing-param-type` |
-| minor (1.0) | Add a constant, rename, small refactor | `missing-return-type`, `bare-except`, `encapsulation-violation`, `message-chain`, `excessive-decorators` |
+| minor (1.0–1.5) | Add a constant, rename, small refactor | `missing-return-type`, `bare-except`, `encapsulation-violation`, `message-chain`, `excessive-decorators`, `pass-through-method`, `orphan-interface` |
 | moderate (1.5–3.0) | Extract method, restructure params | `long-function`, `high-complexity`, `too-many-params`, `sync-async-duplication`, `duplicate-function-body` |
-| major (4.0–5.0) | Split class, break circular deps | `god-class`, `import-cycle`, `layer-violation`, `deep-inheritance` |
+| major (4.0–5.0) | Split class, break circular deps | `god-class`, `import-cycle`, `layer-violation`, `deep-inheritance`, `high-coupling` |
 
 Priority score = `severity_weight × effort`. Higher scores are fixed first — this ensures structural issues (high-severity, high-effort) are tackled before cosmetic ones (low-severity, low-effort).

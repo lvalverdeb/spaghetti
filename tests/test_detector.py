@@ -2621,6 +2621,23 @@ def test_compute_priority_score_info_trivial():
     assert score == 0.15
 
 
+def test_compute_priority_score_high_coupling_major_effort():
+    # Regression test: high-coupling was missing from _FIX_EFFORT entirely,
+    # silently falling back to the 1.0 (trivial) default — understating the
+    # real cost of splitting an overloaded hub module.
+    issue = Issue(
+        file=Path("f.py"),
+        line=1,
+        severity="warning",
+        rule="high-coupling",
+        message="overloaded hub",
+        package="pkg",
+    )
+    score = compute_priority_score(issue)
+    # warning=1.5 × effort=4.0 = 6.0
+    assert score == 6.0
+
+
 def test_build_remediation_plan_groups_by_rule():
     issues = [
         Issue(Path("a.py"), 1, "error", "import-cycle", "cycle", "pkg"),

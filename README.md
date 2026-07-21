@@ -1,6 +1,6 @@
 # spaghetti-detector
 
-Spaghetti-code and architectural-smell detector.
+Spaghetti code and architectural-smell detector.
 
 Scans workspace packages for anti-patterns, architectural violations, and structural code smells — from single-function issues (long functions, deep nesting, high cyclomatic complexity) up to whole-package issues that only show up once you can see across files: real circular imports (not just a parent/child heuristic), copy-pasted function bodies, and the sync/async "twin" duplication pattern (`load`/`aload`, `foo`/`foo_async`) where a fix applied to one twin silently never reaches the other.
 
@@ -82,7 +82,7 @@ This ensures you fix structural issues (circular imports, god-classes) before co
 
 ```bash
 uv run spaghetti
-uv run spaghetti --packages boti-data boti-dask
+uv run spaghetti --packages package1 package2
 uv run spaghetti --severity error
 uv run spaghetti --top 10 --exclude tests/ examples/
 uv run spaghetti --json > report.json
@@ -163,15 +163,17 @@ The plan groups issues by rule, counts affected files, and lists a recommended f
 
 ## Rules
 
-The detector checks **37 rules** across four tiers:
+The detector checks **39 rules** across four tiers:
 
-**Per-file AST checks (31 rules):** `long-function`, `high-complexity`, `missing-return-type`, `missing-param-type`, `too-many-params`, `excessive-returns`, `boolean-flag-params`, `deep-nesting`, `untyped-dict`, `unused-import`, `swallowed-exception`, `duplicate-branch`, `encapsulation-violation`, `god-class`, `layer-violation`, `transport-in-library`, `potential-circular-import`, `god-module`, `mutable-default`, `bare-except`, `star-import`, `global-mutable`, `scope-mutation`, `dead-code`, `message-chain`, `excessive-decorators`, `magic-number`, `magic-string`, `missing-else`, `lazy-class`, `deep-inheritance`.
+**Per-file AST checks (31 rules):** `long-function`, `high-complexity`, `missing-return-type`, `missing-param-type`, `too-many-params`, `excessive-returns`, `boolean-flag-params`, `deep-nesting`, `untyped-dict`, `unused-import`, `swallowed-exception`, `duplicate-branch`, `encapsulation-violation`, `god-class` (also factors in WMC — total cyclomatic complexity summed across a class's methods — alongside method/attribute counts), `layer-violation`, `transport-in-library`, `potential-circular-import`, `god-module`, `mutable-default`, `bare-except`, `star-import`, `global-mutable`, `scope-mutation`, `dead-code`, `message-chain`, `excessive-decorators`, `magic-number`, `magic-string`, `missing-else`, `lazy-class`, `deep-inheritance`, `pass-through-method`.
 
 **Per-file source-text checks (2 rules):** `long-file`, `todo-marker`.
 
 **Infrastructure checks (1 rule):** `syntax-error` (files that fail `ast.parse()`).
 
-**Per-package cross-file checks (3 rules):** `import-cycle`, `duplicate-function-body`, `sync-async-duplication`.
+**Per-package cross-file checks (5 rules):** `import-cycle`, `high-coupling` (a module with both high fan-in and high fan-out), `orphan-interface` (an abstract class with exactly one implementation), `duplicate-function-body`, `sync-async-duplication`.
+
+A `low-cohesion` (LCOM4) check also exists in the codebase but is intentionally not enabled by default — see the rule's own docstring for why.
 
 See [SDD.md](SDD.md) for the full rule catalog, thresholds, and scoring formula.
 

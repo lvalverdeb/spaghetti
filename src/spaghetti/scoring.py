@@ -74,6 +74,7 @@ _FIX_EFFORT: dict[str, float] = {
     "excessive-decorators": 1.0,
     "pass-through-method": 1.0,
     "orphan-interface": 1.5,
+    "high-coupling": 4.0,
 }
 
 _PRIORITY_LEVELS = [
