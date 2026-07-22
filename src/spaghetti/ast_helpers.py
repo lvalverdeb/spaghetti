@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 from collections.abc import Iterator
+from pathlib import Path
 
 
 def _nesting_depth(node: ast.AST, current: int = 0) -> int:
@@ -51,6 +52,24 @@ def _param_has_type_hint(arg: ast.arg) -> bool:
 
 def _is_private(name: str) -> bool:
     return name.startswith("_")
+
+
+def _is_test_function(name: str) -> bool:
+    """True for a pytest test function's own name (``test_*``), not a test
+    *file*'s helper functions — ``create_consented_subject`` in a test file
+    should still be checked, only the bare ``test_*`` functions and their
+    fixture-injected parameters are pytest-convention boilerplate."""
+    return name.startswith("test_")
+
+
+def _is_test_file(filepath: Path) -> bool:
+    """True for a pytest test module: ``test_*.py``/``*_test.py``,
+    ``conftest.py``, or anything under a directory literally named
+    ``tests``."""
+    name = filepath.name
+    if name == "conftest.py" or name.startswith("test_") or name.endswith("_test.py"):
+        return True
+    return "tests" in filepath.parts[:-1]
 
 
 def _file_line_count(source: str) -> int:

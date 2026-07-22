@@ -872,6 +872,22 @@ def test_check_missing_types_skips_init():
     assert issues == []
 
 
+def test_check_missing_types_skips_test_functions_and_fixture_params():
+    # def test_*(...) is exempt entirely — both the bare `-> None` return
+    # type and fixture-injected params (`client`) pytest supplies itself.
+    source = "def test_enroll_blocked_without_consent(client):\n    pass\n"
+    issues = check_missing_types(_parse(source), Path("f.py"), "pkg")
+    assert issues == []
+
+
+def test_check_missing_types_still_flags_test_file_helper_functions():
+    # A non-test_-prefixed helper inside a test file (e.g. helpers.py) must
+    # stay checked — only the bare test_* functions are exempt.
+    source = "def create_consented_subject(db):\n    pass\n"
+    issues = check_missing_types(_parse(source), Path("helpers.py"), "pkg")
+    assert len(issues) == 2  # missing-return-type + missing-param-type
+
+
 def test_check_missing_types_clean_when_typed():
     source = "def typed(x: int, y: str) -> bool:\n    return True\n"
     issues = check_missing_types(_parse(source), Path("f.py"), "pkg")
@@ -1606,6 +1622,40 @@ def test_check_scope_mutations_skips_read_only():
     assert issues == []
 
 
+def test_check_scope_mutations_skips_lazy_singleton_init():
+    source = (
+        "_pipeline = None\n"
+        "def get_pipeline():\n"
+        "    global _pipeline\n"
+        "    if _pipeline is None:\n"
+        "        _pipeline = load_pipeline()\n"
+        "    return _pipeline\n"
+    )
+    issues = check_scope_mutations(_parse(source), Path("f.py"), "pkg")
+    assert issues == []
+
+
+def test_check_scope_mutations_still_flags_unconditional_mutation():
+    # Sanity check: the lazy-init exemption must not swallow genuine hits —
+    # a mutation with no `is None` guard at all is still flagged.
+    source = "_pipeline = None\ndef reset_pipeline() -> None:\n    global _pipeline\n    _pipeline = load_pipeline()\n"
+    issues = check_scope_mutations(_parse(source), Path("f.py"), "pkg")
+    assert len(issues) == 1
+
+
+def test_check_scope_mutations_still_flags_mutation_guarded_by_different_condition():
+    # The guard must test *this* variable specifically, not just any `if`.
+    source = (
+        "_cache = None\n"
+        "def refresh(force):\n"
+        "    global _cache\n"
+        "    if force:\n"
+        "        _cache = reload()\n"
+    )
+    issues = check_scope_mutations(_parse(source), Path("f.py"), "pkg")
+    assert len(issues) == 1
+
+
 def test_check_scope_mutations_skips_local_variable():
     source = "def func() -> None:\n    x = 10\n    x = x + 1\n"
     issues = check_scope_mutations(_parse(source), Path("f.py"), "pkg")
@@ -2067,6 +2117,25 @@ def test_check_magic_numbers_allows_zero_one_minus_one():
     assert issues == []
 
 
+def test_check_magic_numbers_allows_http_status_codes():
+    source = "def f():\n    assert response.status_code == 404\n"
+    issues = check_magic_numbers(_parse(source), source, Path("f.py"), "pkg")
+    assert issues == []
+
+
+def test_check_magic_numbers_allows_well_known_ports():
+    source = "def f():\n    connect(host, 5432)\n    connect(host, 6379)\n"
+    issues = check_magic_numbers(_parse(source), source, Path("f.py"), "pkg")
+    assert issues == []
+
+
+def test_check_magic_numbers_still_flags_unrelated_number_outside_allowlist():
+    source = "def f():\n    retry_after = 47\n"
+    issues = check_magic_numbers(_parse(source), source, Path("f.py"), "pkg")
+    assert len(issues) == 1
+    assert "47" in issues[0].message
+
+
 def test_check_magic_numbers_skips_init():
     source = "class C:\n    def __init__(self):\n        self.x = 42\n"
     issues = check_magic_numbers(_parse(source), source, Path("f.py"), "pkg")
@@ -2145,6 +2214,28 @@ def test_check_magic_strings_flags_repeated_comparison():
     issues = check_magic_strings(_parse(source), Path("f.py"), "pkg")
     assert len(issues) == 2
     assert all(i.rule == "magic-string" for i in issues)
+
+
+def test_check_magic_strings_skips_test_files():
+    source = (
+        "def test_kms_round_trip():\n"
+        "    assert plaintext == 'sensitive-employee-id'\n"
+        "    assert decrypted == 'sensitive-employee-id'\n"
+    )
+    issues = check_magic_strings(_parse(source), Path("test_kms.py"), "pkg")
+    assert issues == []
+
+
+def test_check_magic_strings_skips_conftest():
+    source = "def f():\n    if a == 'x':\n        pass\n    if b == 'x':\n        pass\n"
+    issues = check_magic_strings(_parse(source), Path("conftest.py"), "pkg")
+    assert issues == []
+
+
+def test_check_magic_strings_skips_files_under_tests_directory():
+    source = "def f():\n    if a == 'x':\n        pass\n    if b == 'x':\n        pass\n"
+    issues = check_magic_strings(_parse(source), Path("tests/helpers.py"), "pkg")
+    assert issues == []
     assert all(i.severity == "info" for i in issues)
     assert all("'pending'" in i.message for i in issues)
     assert all("2 times" in i.message for i in issues)
@@ -2424,6 +2515,26 @@ def test_check_lazy_class_allows_dataclass_decorator():
 
 def test_check_lazy_class_allows_dataclass_decorator_with_args():
     source = "@dataclass(frozen=True)\nclass C:\n    x: int = 1\n"
+    issues = check_lazy_class(_parse(source), Path("f.py"), "pkg")
+    assert issues == []
+
+
+def test_check_lazy_class_allows_sqlalchemy_mapped_annotation():
+    # A project's own declarative Base can be named anything, so this must
+    # be recognized by column shape, not by base-class name.
+    source = "class Subject(Base):\n    id: Mapped[int] = mapped_column(primary_key=True)\n"
+    issues = check_lazy_class(_parse(source), Path("f.py"), "pkg")
+    assert issues == []
+
+
+def test_check_lazy_class_allows_sqlalchemy_mapped_qualified():
+    source = "class Subject(Base):\n    id: orm.Mapped[int] = orm.mapped_column(primary_key=True)\n"
+    issues = check_lazy_class(_parse(source), Path("f.py"), "pkg")
+    assert issues == []
+
+
+def test_check_lazy_class_allows_legacy_sqlalchemy_column():
+    source = "class Subject(Base):\n    id = Column(Integer, primary_key=True)\n"
     issues = check_lazy_class(_parse(source), Path("f.py"), "pkg")
     assert issues == []
 

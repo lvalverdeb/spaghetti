@@ -13,6 +13,8 @@ from spaghetti.ast_helpers import (
     _dump_stmts,
     _has_return_type_hint,
     _is_private,
+    _is_test_file,
+    _is_test_function,
     _line_count,
     _nesting_depth,
     _param_has_type_hint,
@@ -106,7 +108,7 @@ def check_missing_types(tree: ast.Module, filepath: Path, pkg: str) -> list[Issu
     issues: list[Issue] = []
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            if _is_private(node.name):
+            if _is_private(node.name) or _is_test_function(node.name):
                 continue
             if not _has_return_type_hint(node) and node.name != "__init__":
                 issues.append(
@@ -1088,6 +1090,36 @@ def _walk_own_scope(node: ast.AST) -> Iterator[ast.AST]:
         yield from _walk_own_scope(child)
 
 
+def _is_none_guard_test(test: ast.expr, target_name: str) -> bool:
+    """True for `<target_name> is None`."""
+    return (
+        isinstance(test, ast.Compare)
+        and isinstance(test.left, ast.Name)
+        and test.left.id == target_name
+        and len(test.ops) == 1
+        and isinstance(test.ops[0], ast.Is)
+        and len(test.comparators) == 1
+        and isinstance(test.comparators[0], ast.Constant)
+        and test.comparators[0].value is None
+    )
+
+
+def _is_lazy_singleton_init(func_node: ast.AST, target_name: str, mutation: ast.AST) -> bool:
+    """True if *mutation* sits directly inside an ``if <target_name> is
+    None:`` guard — the standard lazy-singleton-init idiom (load an
+    expensive resource once, cache it in a module-level variable initialized
+    to ``None``). This has exactly one writer, one purpose, and no ordering
+    dependency — unlike unconstrained global mutation, which is what this
+    rule otherwise exists to catch.
+    """
+    return any(
+        isinstance(node, ast.If)
+        and _is_none_guard_test(node.test, target_name)
+        and mutation in node.body
+        for node in _walk_own_scope(func_node)
+    )
+
+
 def check_scope_mutations(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
     """Detect functions that explicitly mutate outer-scope variables via
     ``global`` or ``nonlocal`` declarations followed by assignments."""
@@ -1125,6 +1157,9 @@ def check_scope_mutations(tree: ast.Module, filepath: Path, pkg: str) -> list[Is
                     target_name = child.target.id
 
             if target_name is None:
+                continue
+
+            if _is_lazy_singleton_init(func_node, target_name, child):
                 continue
 
             keyword_str = "/".join(sorted(declared_by[target_name]))
@@ -1265,6 +1300,19 @@ def _magic_number_display(source: str, node: ast.Constant) -> str:
     return ast.get_source_segment(source, node) or repr(node.value)
 
 
+# Standard HTTP status codes and well-known infra ports: as conventionally
+# idiomatic as -1/0/1 (every reader recognizes 404 or 5432 instantly; naming
+# them buys nothing over the literal), so allowed unconditionally rather than
+# only when compared against e.g. `.status_code` — matching how -1/0/1 are
+# already allowed everywhere, not just in specific contexts.
+_MAGIC_NUMBER_HTTP_STATUS_CODES = {
+    100, 101, 200, 201, 202, 204, 301, 302, 304,
+    400, 401, 403, 404, 405, 409, 410, 422, 429,
+    500, 502, 503, 504,
+}  # fmt: skip
+_MAGIC_NUMBER_WELL_KNOWN_PORTS = {80, 443, 3306, 5432, 6379, 8080, 8200, 27017}
+
+
 def check_magic_numbers(tree: ast.Module, source: str, filepath: Path, pkg: str) -> list[Issue]:
     """Flag numeric literals other than 0, 1, or -1 in a function's body.
 
@@ -1272,13 +1320,15 @@ def check_magic_numbers(tree: ast.Module, source: str, filepath: Path, pkg: str)
     ``base_delay: float = 0.5``) is already named by the parameter itself —
     and skips a literal passed as a call's keyword argument (e.g.
     ``stacklevel=2``), since the keyword name documents it the same way a
-    named constant would. ``__init__`` methods are skipped entirely.
+    named constant would. ``__init__`` methods are skipped entirely. Also
+    allows standard HTTP status codes and well-known infra ports (see
+    ``_MAGIC_NUMBER_HTTP_STATUS_CODES``/``_MAGIC_NUMBER_WELL_KNOWN_PORTS``).
 
     Not part of ``ALL_CHECKS``/``FileCheck``: unlike every other per-file
     check, this one needs the raw source text (see ``_magic_number_display``)
     in addition to the parsed tree, so ``detector.py`` calls it directly.
     """
-    _ALLOWED = {-1, 0, 1}
+    _ALLOWED = {-1, 0, 1} | _MAGIC_NUMBER_HTTP_STATUS_CODES | _MAGIC_NUMBER_WELL_KNOWN_PORTS
     issues: list[Issue] = []
 
     def _scan_func(func: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
@@ -1403,7 +1453,14 @@ def check_magic_strings(tree: ast.Module, filepath: Path, pkg: str) -> list[Issu
     variable/expression — a sign the value is being used as an ad-hoc
     category or status code (with fragile, scattered `==`/`.upper()`-style
     handling) rather than a proper Value Object that canonicalizes it once.
+
+    Skipped entirely for test files: a value compared twice in one test
+    function is normal arrange-then-assert structure, not a sign of a
+    missing domain concept.
     """
+    if _is_test_file(filepath):
+        return []
+
     comparisons: list[tuple[str, int]] = []
 
     for node in ast.walk(tree):
@@ -1553,17 +1610,62 @@ def _lazy_class_decorator_target_name(dec: ast.expr) -> str | None:
     return None
 
 
+def _lazy_class_attr_target_name(node: ast.expr) -> str | None:
+    """The bare name a `Mapped[...]`/`mapped_column(...)`/`Column(...)`
+    reference resolves to, whether written as `Mapped`/`mapped_column`/
+    `Column` directly or qualified (`orm.Mapped`, `sa.Column`)."""
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return None
+
+
+def _is_mapped_annotation(annotation: ast.expr) -> bool:
+    """True for a `Mapped[...]` annotation (SQLAlchemy 2.0 typed declarative)."""
+    target = annotation.value if isinstance(annotation, ast.Subscript) else annotation
+    return _lazy_class_attr_target_name(target) == "Mapped"
+
+
+def _is_orm_column_call(value: ast.expr | None) -> bool:
+    """True for a `mapped_column(...)`/`Column(...)` call (SQLAlchemy 2.0
+    untyped declarative, or legacy 1.x Declarative style)."""
+    if not isinstance(value, ast.Call):
+        return False
+    return _lazy_class_attr_target_name(value.func) in {"mapped_column", "Column"}
+
+
+def _lazy_class_has_orm_columns(node: ast.ClassDef) -> bool:
+    """True if *node* has at least one SQLAlchemy declarative column
+    attribute. This is what actually makes a class an ORM model — a
+    project's own declarative ``Base`` can be named anything, so matching by
+    base-class name (like the other exemptions below) would be guesswork;
+    the column declarations are the unambiguous signal.
+    """
+    for stmt in node.body:
+        if isinstance(stmt, ast.AnnAssign) and (
+            _is_mapped_annotation(stmt.annotation) or _is_orm_column_call(stmt.value)
+        ):
+            return True
+        if isinstance(stmt, ast.Assign) and _is_orm_column_call(stmt.value):
+            return True
+    return False
+
+
 def _lazy_class_is_exempt(node: ast.ClassDef) -> bool:
     """True if *node* already is a declarative data container, or a raise-able
     exception/warning type.
 
-    Pydantic ``BaseModel``/``BaseSettings`` subclasses and
+    Pydantic ``BaseModel``/``BaseSettings`` subclasses, SQLAlchemy
+    declarative models (see ``_lazy_class_has_orm_columns``), and
     ``@dataclass``-decorated classes already satisfy check_lazy_class's own
     suggested remedy, so they should never be flagged regardless of method
     count. Exception/warning subclasses are exempt for a different reason:
     the remedy itself (a plain function or dataclass) isn't raise-able, so it
     doesn't apply.
     """
+    if _lazy_class_has_orm_columns(node):
+        return True
     for base in node.bases:
         name = base.id if isinstance(base, ast.Name) else getattr(base, "attr", None)
         if name is None:

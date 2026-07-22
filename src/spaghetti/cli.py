@@ -333,6 +333,10 @@ def main() -> int:
                 for i in filtered
             ],
             "suppressed": total_result.suppressed,
+            "suppression_help": (
+                "Silence a confirmed non-issue by adding "
+                "'# spaghetti-ignore[rule-name]: reason' on the flagged line (or the line above)."
+            ),
             "ignored": [
                 {
                     "file": _display_path(i.file),
@@ -387,6 +391,11 @@ def _render_summary(filtered: list[Issue], total_result: ScanResult) -> None:
     print(f"    Info:            {infos}")
     if total_result.suppressed:
         print(f"  Suppressed:        {total_result.suppressed} (inline spaghetti-ignore markers)")
+    if filtered:
+        print(
+            "  Silence a confirmed non-issue: add "
+            "'# spaghetti-ignore[rule-name]: reason' on the flagged line (or the line above)."
+        )
     print()
 
 
