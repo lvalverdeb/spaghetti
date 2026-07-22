@@ -44,6 +44,11 @@ MAX_FILE_LINES = 400
 MAX_FUNC_PARAMS = 6
 MAX_RETURNS = 3
 MAX_NESTING_DEPTH = 5
+# A long function whose nesting stays this shallow or shallower (a couple of
+# single-level guard clauses) reads as a flat, linear sequence, not something
+# Extract Method reliably improves — distinct from MAX_NESTING_DEPTH, which
+# is deep-nesting's own, much higher threshold for a different rule.
+LONG_FUNCTION_FLAT_NESTING_MAX = 2
 MAX_CROSS_LAYER_IMPORTS = 0
 COMPLEXITY_THRESHOLD = 10
 MAX_CLASS_METHODS = 25

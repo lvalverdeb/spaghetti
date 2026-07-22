@@ -76,20 +76,21 @@ def _file_line_count(source: str) -> int:
     return len(source.splitlines())
 
 
-def _count_own_returns(node: ast.AST) -> int:
-    """Count Return statements belonging to ``node``, not to nested defs."""
+def _count_nested_returns(node: ast.AST, current: int = 0) -> int:
+    """Count Return statements at nesting depth >= 2 within ``node``, not
+    counting returns in nested defs/lambdas. Mirrors ``_nesting_depth``'s
+    traversal — the same node types increment depth — but tallies qualifying
+    returns instead of tracking a maximum."""
     count = 0
-
-    def visit(n: ast.AST) -> None:
-        nonlocal count
-        for child in ast.iter_child_nodes(n):
-            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
-                continue
-            if isinstance(child, ast.Return):
+    for child in ast.iter_child_nodes(node):
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            continue
+        if isinstance(child, (ast.If, ast.For, ast.While, ast.With, ast.Try, ast.ExceptHandler)):
+            count += _count_nested_returns(child, current + 1)
+        else:
+            if isinstance(child, ast.Return) and current >= 2:
                 count += 1
-            visit(child)
-
-    visit(node)
+            count += _count_nested_returns(child, current)
     return count
 
 

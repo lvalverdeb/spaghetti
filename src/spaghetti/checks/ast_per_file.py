@@ -8,7 +8,7 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 
 from spaghetti.ast_helpers import (
-    _count_own_returns,
+    _count_nested_returns,
     _cyclomatic_complexity,
     _dump_stmts,
     _has_return_type_hint,
@@ -23,6 +23,7 @@ from spaghetti.config import (
     COMPLEXITY_THRESHOLD,
     ERROR_ESCALATION_MULTIPLIER,
     LAYER_RULES,
+    LONG_FUNCTION_FLAT_NESTING_MAX,
     MAX_CLASS_ATTRS,
     MAX_CLASS_LCOM4,
     MAX_CLASS_METHODS,
@@ -57,7 +58,7 @@ def check_long_functions(tree: ast.Module, filepath: Path, pkg: str) -> list[Iss
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             lines = _line_count(node)
-            if lines > MAX_FUNCTION_LINES:
+            if lines > MAX_FUNCTION_LINES and _nesting_depth(node) > LONG_FUNCTION_FLAT_NESTING_MAX:
                 issues.append(
                     Issue(
                         file=filepath,
@@ -177,7 +178,7 @@ def check_excessive_returns(tree: ast.Module, filepath: Path, pkg: str) -> list[
     issues: list[Issue] = []
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            n_returns = _count_own_returns(node)
+            n_returns = _count_nested_returns(node)
             if n_returns > MAX_RETURNS:
                 issues.append(
                     Issue(
@@ -187,7 +188,7 @@ def check_excessive_returns(tree: ast.Module, filepath: Path, pkg: str) -> list[
                         rule="excessive-returns",
                         package=pkg,
                         message=(
-                            f"{node.name}() has {n_returns} return statements "
+                            f"{node.name}() has {n_returns} nested return statements "
                             f"(max {MAX_RETURNS}) — consider a Return Object bundling the "
                             "result and building it up to a single return"
                         ),
@@ -1768,7 +1769,11 @@ def check_god_module(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
     public_funcs = 0
 
     for node in ast.iter_child_nodes(tree):
-        if isinstance(node, ast.ClassDef) and not node.name.startswith("_"):
+        if (
+            isinstance(node, ast.ClassDef)
+            and not node.name.startswith("_")
+            and not _lazy_class_is_exempt(node)
+        ):
             public_classes += 1
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and not node.name.startswith(
             "_"

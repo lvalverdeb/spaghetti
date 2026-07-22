@@ -120,8 +120,8 @@ def test_find_workspace_root_finds_ancestor_workspace_marker(tmp_path):
 
 
 def test_check_long_functions_flags_over_threshold():
-    body = "\n".join(f"    x{i} = {i}" for i in range(MAX_FUNCTION_LINES + 5))
-    source = f"def long_func():\n{body}\n    return x0\n"
+    body = "\n".join(f"                x{i} = {i}" for i in range(MAX_FUNCTION_LINES + 5))
+    source = f"def long_func():\n    if True:\n        if True:\n            if True:\n{body}\n    return x0\n"
     issues = check_long_functions(_parse(source), Path("f.py"), "pkg")
     assert len(issues) == 1
     assert issues[0].rule == "long-function"
@@ -131,6 +131,13 @@ def test_check_long_functions_flags_over_threshold():
 
 def test_check_long_functions_ignores_short_function():
     source = "def short_func():\n    return 1\n"
+    issues = check_long_functions(_parse(source), Path("f.py"), "pkg")
+    assert issues == []
+
+
+def test_check_long_functions_ignores_long_but_flat_function():
+    body = "\n".join(f"    x{i} = {i}" for i in range(MAX_FUNCTION_LINES + 5))
+    source = f"def long_flat_func():\n{body}\n    return x0\n"
     issues = check_long_functions(_parse(source), Path("f.py"), "pkg")
     assert issues == []
 
@@ -283,17 +290,23 @@ def test_suppression_marker_on_line_above(tmp_path: Path):
 
 
 def test_suppression_named_rule_leaves_other_rules_on_same_line(tmp_path: Path):
-    # A function with 4+ returns is flagged for excessive-returns at its def
-    # line; suppressing a different rule there must not hide it.
+    # A function with 4+ nested returns is flagged for excessive-returns at
+    # its def line; suppressing a different rule there must not hide it.
     source = (
         "# spaghetti-ignore[long-function]: unrelated rule\n"
         "def f(x: int) -> int:\n"
         "    if x == 1:\n"
-        "        return 1\n"
+        "        if True:\n"
+        "            return 1\n"
         "    if x == 2:\n"
-        "        return 2\n"
+        "        if True:\n"
+        "            return 2\n"
         "    if x == 3:\n"
-        "        return 3\n"
+        "        if True:\n"
+        "            return 3\n"
+        "    if x == 4:\n"
+        "        if True:\n"
+        "            return 4\n"
         "    return 0\n"
     )
     result = _scan_single_file(tmp_path, source)
@@ -306,11 +319,17 @@ def test_suppression_bare_marker_suppresses_all_rules_on_line(tmp_path: Path):
         "# spaghetti-ignore: reviewed, intentional\n"
         "def f(x: int) -> int:\n"
         "    if x == 1:\n"
-        "        return 1\n"
+        "        if True:\n"
+        "            return 1\n"
         "    if x == 2:\n"
-        "        return 2\n"
+        "        if True:\n"
+        "            return 2\n"
         "    if x == 3:\n"
-        "        return 3\n"
+        "        if True:\n"
+        "            return 3\n"
+        "    if x == 4:\n"
+        "        if True:\n"
+        "            return 4\n"
         "    return 0\n"
     )
     result = _scan_single_file(tmp_path, source)
@@ -928,11 +947,17 @@ def test_check_excessive_returns_flags_many():
     source = (
         "def func(x: int) -> int:\n"
         "    if x == 1:\n"
-        "        return 1\n"
+        "        if True:\n"
+        "            return 1\n"
         "    if x == 2:\n"
-        "        return 2\n"
+        "        if True:\n"
+        "            return 2\n"
         "    if x == 3:\n"
-        "        return 3\n"
+        "        if True:\n"
+        "            return 3\n"
+        "    if x == 4:\n"
+        "        if True:\n"
+        "            return 4\n"
         "    return 0\n"
     )
     issues = check_excessive_returns(_parse(source), Path("f.py"), "pkg")
@@ -942,6 +967,23 @@ def test_check_excessive_returns_flags_many():
 
 def test_check_excessive_returns_clean():
     source = "def func(x: int) -> int:\n    if x > 0:\n        return 1\n    return 0\n"
+    issues = check_excessive_returns(_parse(source), Path("f.py"), "pkg")
+    assert issues == []
+
+
+def test_check_excessive_returns_ignores_flat_guard_clauses():
+    source = (
+        "def func(x: int) -> int:\n"
+        "    if x == 1:\n"
+        "        return 1\n"
+        "    if x == 2:\n"
+        "        return 2\n"
+        "    if x == 3:\n"
+        "        return 3\n"
+        "    if x == 4:\n"
+        "        return 4\n"
+        "    return 0\n"
+    )
     issues = check_excessive_returns(_parse(source), Path("f.py"), "pkg")
     assert issues == []
 
@@ -1509,6 +1551,20 @@ def test_check_god_module_clean():
     funcs = "\n".join(f"def func{i}() -> None: pass" for i in range(10))
     issues = check_god_module(_parse(funcs), Path("f.py"), "pkg")
     assert issues == []
+
+
+def test_check_god_module_ignores_dto_classes():
+    classes = "\n".join(f"class Dto{i}(BaseModel):\n    pass\n" for i in range(20))
+    issues = check_god_module(_parse(classes), Path("f.py"), "pkg")
+    assert issues == []
+
+
+def test_check_god_module_still_flags_mixed_module():
+    real_classes = "\n".join(f"class Real{i}:\n    def m(self) -> None: pass\n" for i in range(16))
+    dtos = "\n".join(f"class Dto{i}(BaseModel):\n    pass\n" for i in range(5))
+    issues = check_god_module(_parse(f"{real_classes}\n{dtos}"), Path("f.py"), "pkg")
+    assert len(issues) == 1
+    assert "16 classes" in issues[0].message
 
 
 # ── Mutable Default ─────────────────────────────────────────────────────────
