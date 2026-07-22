@@ -900,11 +900,28 @@ def test_check_missing_types_skips_test_functions_and_fixture_params():
 
 
 def test_check_missing_types_still_flags_test_file_helper_functions():
-    # A non-test_-prefixed helper inside a test file (e.g. helpers.py) must
-    # stay checked — only the bare test_* functions are exempt.
+    # A bare "helpers.py" (no tests/ parent, not conftest.py) isn't
+    # recognized as a test path at all, so it stays fully checked — this is
+    # the "not a test file" baseline, distinct from the tests below.
     source = "def create_consented_subject(db):\n    pass\n"
     issues = check_missing_types(_parse(source), Path("helpers.py"), "pkg")
     assert len(issues) == 2  # missing-return-type + missing-param-type
+
+
+def test_check_missing_types_skips_pytest_fixture_in_conftest():
+    # @pytest.fixture-decorated functions in conftest.py are still pytest
+    # dependency-injection boilerplate, not application code needing types.
+    source = "@pytest.fixture\ndef db_session():\n    yield session\n"
+    issues = check_missing_types(_parse(source), Path("conftest.py"), "pkg")
+    assert issues == []
+
+
+def test_check_missing_types_skips_helper_in_tests_directory():
+    # Unlike the bare-"helpers.py" baseline above, a helper under a real
+    # tests/ directory is test-support code and should be exempt.
+    source = "def create_consented_subject(db):\n    pass\n"
+    issues = check_missing_types(_parse(source), Path("tests/helpers.py"), "pkg")
+    assert issues == []
 
 
 def test_check_missing_types_clean_when_typed():
@@ -1567,6 +1584,15 @@ def test_check_god_module_still_flags_mixed_module():
     assert "16 classes" in issues[0].message
 
 
+def test_check_god_module_ignores_protocol_and_enum_classes():
+    protocols = "\n".join(
+        f"class Proto{i}(Protocol):\n    def m(self) -> None: ...\n" for i in range(10)
+    )
+    enums = "\n".join(f'class Enum{i}(StrEnum):\n    A = "a"\n' for i in range(10))
+    issues = check_god_module(_parse(f"{protocols}\n{enums}"), Path("f.py"), "pkg")
+    assert issues == []
+
+
 # ── Mutable Default ─────────────────────────────────────────────────────────
 
 
@@ -2124,6 +2150,29 @@ def test_check_message_chains_allows_single_attr():
     assert issues == []
 
 
+def test_check_message_chains_ignores_import_rooted_fluent_chain():
+    # A fluent chain rooted directly in a call to an imported class (e.g.
+    # testcontainers' own builder API) reflects that library's shape, not a
+    # coupling problem this codebase's authors can address.
+    source = (
+        "from testcontainers.postgres import PostgresContainer\n\n\n"
+        "def f():\n"
+        "    PostgresContainer('postgres:15').with_bind_ports(5432, 5432)."
+        "with_env('a', 'b').with_exposed_ports(5432).start()\n"
+    )
+    issues = check_message_chains(_parse(source), Path("f.py"), "pkg")
+    assert issues == []
+
+
+def test_check_message_chains_still_flags_project_rooted_chain():
+    # An import elsewhere in the file must not exempt a chain rooted in an
+    # unrelated, non-imported local/project object.
+    source = "from testcontainers.postgres import PostgresContainer\n\n\ndef f():\n    a.b().c().d().e()\n"
+    issues = check_message_chains(_parse(source), Path("f.py"), "pkg")
+    assert len(issues) == 1
+    assert issues[0].rule == "message-chain"
+
+
 # ── Rule: excessive-decorators ──────────────────────────────────────────────
 
 
@@ -2253,6 +2302,24 @@ def test_check_magic_numbers_displays_underscored_notation():
     issues = check_magic_numbers(_parse(source), source, Path("f.py"), "pkg")
     assert len(issues) == 1
     assert "1_000" in issues[0].message
+
+
+def test_check_magic_numbers_skips_dense_tuning_file():
+    # A file with many distinct, non-repeating literals reads as an
+    # intentional parameter table (e.g. an FMR/FNMR bake-off script), not a
+    # smell — the density itself is the signal.
+    values = [2, 5, 1.2, 10, 70, 0.05, 20, 34, 0.36]
+    body = "\n".join(f"    v{i} = {v}" for i, v in enumerate(values))
+    source = f"def bakeoff():\n{body}\n"
+    issues = check_magic_numbers(_parse(source), source, Path("f.py"), "pkg")
+    assert issues == []
+
+
+def test_check_magic_numbers_still_flags_sparse_file():
+    # A handful of magic numbers below the density threshold stays flagged.
+    source = "def f():\n    a = 47\n    b = 91\n"
+    issues = check_magic_numbers(_parse(source), source, Path("f.py"), "pkg")
+    assert len(issues) == 2
 
 
 # ── Rule: magic-string ───────────────────────────────────────────────────────
@@ -2559,6 +2626,23 @@ def test_check_lazy_class_allows_named_tuple():
 
 def test_check_lazy_class_allows_named_tuple_qualified():
     source = "class C(typing.NamedTuple):\n    x: int\n"
+    issues = check_lazy_class(_parse(source), Path("f.py"), "pkg")
+    assert issues == []
+
+
+def test_check_lazy_class_allows_protocol_class():
+    # A structural-typing interface's whole point is a low method count —
+    # not a sign of under-development the way it would be for a plain class.
+    source = (
+        "class LivenessChecker(Protocol):\n"
+        "    def check(self, image_bgr: np.ndarray) -> LivenessResult: ...\n"
+    )
+    issues = check_lazy_class(_parse(source), Path("f.py"), "pkg")
+    assert issues == []
+
+
+def test_check_lazy_class_allows_str_enum_class():
+    source = 'class ConsentStatus(StrEnum):\n    ACTIVE = "active"\n    REVOKED = "revoked"\n'
     issues = check_lazy_class(_parse(source), Path("f.py"), "pkg")
     assert issues == []
 
