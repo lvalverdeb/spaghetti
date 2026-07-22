@@ -37,13 +37,14 @@ from spaghetti.checks.package_level import (
     check_duplicate_functions_pkg,
     check_sync_async_twins_pkg,
 )
-from spaghetti.config import DEFAULT_PACKAGES as _DEFAULT_PACKAGES
 from spaghetti.models import Issue, ScanConfig, ScanResult
 from spaghetti.suppression import _is_suppressed
 
-DEFAULT_PACKAGES = dict(_DEFAULT_PACKAGES)
-
-PACKAGES: dict[str, Path] = dict(DEFAULT_PACKAGES)
+# Empty until cli.main() sets it (either via discover_cwd_packages or
+# resolve_packages) -- there's no hardcoded workspace-specific default to
+# fall back to, since a generic pip-install-anywhere tool shouldn't assume
+# it's running inside this particular monorepo.
+PACKAGES: dict[str, Path] = {}
 
 ALLOWED_IMPORT_PREFIXES: dict[str, list[str]] = {
     "etl-core": ["etl_core."],

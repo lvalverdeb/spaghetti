@@ -37,21 +37,6 @@ def _find_workspace_root(start: Path) -> Path | None:
 
 WORKSPACE_ROOT: Path | None = _find_workspace_root(Path(__file__).resolve().parent)
 
-# ── Package registry ──────────────────────────────────────────────────────────
-
-DEFAULT_PACKAGES: dict[str, Path] = (
-    {
-        "boti": WORKSPACE_ROOT / "boti" / "src" / "boti",
-        "boti-data": WORKSPACE_ROOT / "boti-data" / "src" / "boti_data",
-        "boti-dask": WORKSPACE_ROOT / "boti-dask" / "src" / "boti_dask",
-        "spaghetti": WORKSPACE_ROOT / "spaghetti" / "src" / "spaghetti",
-    }
-    if WORKSPACE_ROOT is not None
-    else {}
-)
-
-PACKAGES: dict[str, Path] = dict(DEFAULT_PACKAGES)
-
 # ── Thresholds ────────────────────────────────────────────────────────────────
 
 MAX_FUNCTION_LINES = 50

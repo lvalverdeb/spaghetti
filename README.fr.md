@@ -177,11 +177,11 @@ Voir [SDD.md](SDD.md) pour le catalogue complet des règles, seuils et formule d
 
 ## Configurer les Paquets
 
-Sans paramètres, `spaghetti` scanne les `DEFAULT_PACKAGES` de cet espace de travail (`boti`, `boti-data`, `boti-dask` ; voir `src/spaghetti/detector.py`). Pour cibler d'autres paquets — dans cet espace de travail, un autre espace de travail, ou n'importe quel répertoire sur le disque — utilisez `--config` et/ou `--package`.
+Sans paramètres, `spaghetti` découvre automatiquement les paquets du répertoire courant : chaque sous-répertoire immédiat contenant au moins un fichier `.py` devient son propre paquet nommé (en ignorant `.venv`, `.git`, `__pycache__`, `node_modules` et les répertoires de bruit similaires), et tout fichier `.py` isolé directement dans le répertoire courant est regroupé dans un paquet supplémentaire nommé d'après le répertoire lui-même. Pour cibler d'autres paquets — dans cet espace de travail, un autre espace de travail, ou n'importe quel répertoire sur le disque — utilisez `--config` et/ou `--package`.
 
 **Prépondérance :**
-1. Aucun paramètre donné → les valeurs par défaut intégrées sont utilisées telles quelles.
-2. `--config` donné → son mappage `packages:` **remplace** entièrement les valeurs par défaut, de sorte qu'un fichier de configuration définit le jeu complet explicitement plutôt que d'hériter silencieusement de paquets non liés en dur.
+1. Aucun paramètre donné → la découverte automatique du répertoire courant est utilisée, comme décrit ci-dessus.
+2. `--config` donné → son mappage `packages:` est utilisé comme jeu complet, explicitement plutôt que découvert automatiquement.
 3. Les entrées `--package NAME=PATH` sont alors superposées sur le jeu produit par (1) ou (2) — ajoutant de nouveaux noms ou écrasant ceux déjà définis, de sorte qu'un fichier de configuration et un ajout ad-hoc rapide fonctionnent ensemble.
 
 ### `--config` : Fichier YAML

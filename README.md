@@ -179,11 +179,11 @@ See [SDD.md](SDD.md) for the full rule catalog, thresholds, and scoring formula.
 
 ## Configuring Packages
 
-With no flags, `spaghetti` scans this workspace's own `DEFAULT_PACKAGES` (`boti`, `boti-data`, `boti-dask`; see `src/spaghetti/detector.py`). To point it at other packages — in this workspace, another workspace, or any directory on disk — use `--config` and/or `--package`.
+With no flags, `spaghetti` auto-discovers packages from the current directory: every immediate subdirectory containing at least one `.py` file becomes its own named package (skipping `.venv`, `.git`, `__pycache__`, `node_modules`, and similar noise directories), and any loose `.py` files sitting directly in the current directory are grouped into one more package named after the directory itself. To point it at other packages — in this workspace, another workspace, or any directory on disk — use `--config` and/or `--package`.
 
 **Precedence:**
-1. Neither flag given → the built-in defaults are used as-is.
-2. `--config` given → its `packages:` mapping **replaces** the defaults entirely, so a config file states the full set explicitly rather than silently inheriting unrelated hardcoded packages.
+1. Neither flag given → cwd auto-discovery is used, as described above.
+2. `--config` given → its `packages:` mapping is used as the full set, explicitly rather than auto-discovered.
 3. `--package NAME=PATH` entries are then overlaid on top of whichever set (1) or (2) produced — adding new names or overriding ones already defined, so a config file plus a quick ad-hoc addition both work together.
 
 ### `--config`: YAML File

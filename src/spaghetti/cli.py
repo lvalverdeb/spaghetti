@@ -236,8 +236,6 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
-    from spaghetti.config import DEFAULT_PACKAGES
-
     parser = _build_arg_parser()
     args = parser.parse_args()
 
@@ -247,10 +245,13 @@ def main() -> int:
     from spaghetti.scanner import review_packages_concurrently
 
     # A bare invocation (no --config, no --package) must never silently fall
-    # back to the workspace's built-in boti/boti-data/boti-dask registry —
-    # instead it auto-discovers whatever's actually under the current
-    # directory. --config/--package (in any combination) opt back into the
-    # explicit registry-resolution path below, unchanged.
+    # back to a hardcoded workspace-specific registry — instead it
+    # auto-discovers whatever's actually under the current directory.
+    # --config/--package (in any combination) opt back into the explicit
+    # registry-resolution path below, unchanged. There's no built-in default
+    # registry to fall back to in that path either (`defaults={}`) — a
+    # generic pip-install-anywhere tool shouldn't assume it's running inside
+    # this particular monorepo.
     run_exclude = args.exclude
     non_recursive: frozenset[str] = frozenset()
     if args.config is None and not args.package_args:
@@ -262,7 +263,7 @@ def main() -> int:
         _det.PACKAGES = resolve_packages(
             config_path=args.config,
             package_args=args.package_args,
-            defaults=DEFAULT_PACKAGES,
+            defaults={},
             cwd=Path.cwd(),
         )
     if not _det.PACKAGES:

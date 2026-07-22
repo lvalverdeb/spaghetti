@@ -177,11 +177,11 @@ Véase [SDD.md](SDD.md) para el catálogo completo de reglas, umbrales y fórmul
 
 ## Configurar Paquetes
 
-Sin parámetros, `spaghetti` escanea los `DEFAULT_PACKAGES` de este espacio de trabajo (`boti`, `boti-data`, `boti-dask`; véase `src/spaghetti/detector.py`). Para apuntar a otros paquetes — en este espacio de trabajo, otro espacio de trabajo, o cualquier directorio en disco — use `--config` y/o `--package`.
+Sin parámetros, `spaghetti` descubre automáticamente los paquetes del directorio actual: cada subdirectorio inmediato que contenga al menos un archivo `.py` se convierte en su propio paquete con nombre (omitiendo `.venv`, `.git`, `__pycache__`, `node_modules` y directorios de ruido similares), y cualquier archivo `.py` suelto directamente en el directorio actual se agrupa en un paquete adicional nombrado según el propio directorio. Para apuntar a otros paquetes — en este espacio de trabajo, otro espacio de trabajo, o cualquier directorio en disco — use `--config` y/o `--package`.
 
 **Precedencia:**
-1. No se da ningún parámetro → los valores por defecto integrados se usan tal cual.
-2. Se da `--config` → su mapeo `packages:` **reemplaza** los valores por defecto completamente, de modo que un archivo de configuración establece el conjunto completo explícitamente en lugar de heredar silenciosamente paquetes no relacionados codificados.
+1. No se da ningún parámetro → se usa el descubrimiento automático del directorio actual, como se describe arriba.
+2. Se da `--config` → su mapeo `packages:` se usa como el conjunto completo, de forma explícita en lugar de descubierto automáticamente.
 3. Las entradas `--package NAME=PATH` se superponen encima de cualquiera de los conjuntos producidos por (1) o (2) — agregando nuevos nombres o sobreescribiendo los ya definidos, de modo que un archivo de configuración y una adición rápida ad-hoc funcionan juntos.
 
 ### `--config`: Archivo YAML

@@ -727,9 +727,9 @@ def test_main_bare_invocation_empty_cwd_errors(
 def test_main_scans_ad_hoc_package_via_cli_flag(
     fake_package: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
 ):
-    """End-to-end: --package points main() at an arbitrary directory outside
-    the built-in DEFAULT_PACKAGES registry, proving the CLI plumbing (not
-    just resolve_packages() in isolation) actually drives a real scan."""
+    """End-to-end: --package points main() at an arbitrary directory,
+    proving the CLI plumbing (not just resolve_packages() in isolation)
+    actually drives a real scan."""
     monkeypatch.setattr(ds, "PACKAGES", dict(ds.PACKAGES))  # restore after test
     monkeypatch.setattr(
         "sys.argv",
