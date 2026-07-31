@@ -764,6 +764,34 @@ def test_main_scans_ad_hoc_package_via_cli_flag(
     assert "bare-except" in out
 
 
+def test_main_version_flag_prints_version_and_exits_zero(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+):
+    monkeypatch.setattr("sys.argv", ["spaghetti", "--version"])
+
+    with pytest.raises(SystemExit) as exc_info:
+        ds.main()
+
+    assert exc_info.value.code == 0
+    assert "spaghetti" in capsys.readouterr().out
+
+
+def test_main_quiet_flag_suppresses_banner_but_keeps_summary(
+    fake_package: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+):
+    monkeypatch.setattr(ds, "PACKAGES", dict(ds.PACKAGES))  # restore after test
+    monkeypatch.setattr(
+        "sys.argv",
+        ["spaghetti", "--package", f"fake_pkg={fake_package}", "--severity", "info", "--quiet"],
+    )
+
+    ds.main()
+
+    out = capsys.readouterr().out
+    assert "SPAGHETTI CODE DETECTION REPORT" not in out
+    assert "Files scanned:" in out
+
+
 def test_main_errors_on_unknown_package_name(fake_package: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(ds, "PACKAGES", dict(ds.PACKAGES))  # restore after test
     monkeypatch.setattr(

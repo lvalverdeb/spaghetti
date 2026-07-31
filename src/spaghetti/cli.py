@@ -162,6 +162,18 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 
     parser = argparse.ArgumentParser(description="Spaghetti Code Detector")
     parser.add_argument(
+        "--version",
+        action="version",
+        version=f"spaghetti {_spaghetti_version()}",
+        help="Print the installed spaghetti-detector version and exit",
+    )
+    parser.add_argument(
+        "--quiet",
+        "-q",
+        action="store_true",
+        help="Suppress the report banner (text-report mode only; --json is unaffected)",
+    )
+    parser.add_argument(
         "--config",
         type=Path,
         default=None,
@@ -376,11 +388,14 @@ def _severity_counts(issues: list[Issue]) -> tuple[int, int, int]:
     return errors, warnings, infos
 
 
-def _render_summary(filtered: list[Issue], total_result: ScanResult) -> None:
-    print("=" * BANNER_WIDTH)
-    print(f"  SPAGHETTI CODE DETECTION REPORT (v{_spaghetti_version()})")
-    print("=" * BANNER_WIDTH)
-    print()
+def _render_summary(
+    filtered: list[Issue], total_result: ScanResult, *, quiet: bool = False
+) -> None:
+    if not quiet:
+        print("=" * BANNER_WIDTH)
+        print(f"  SPAGHETTI CODE DETECTION REPORT (v{_spaghetti_version()})")
+        print("=" * BANNER_WIDTH)
+        print()
     print(f"  Files scanned:     {total_result.files_scanned}")
     print(f"  Lines scanned:     {total_result.total_lines}")
     print(f"  Functions scanned: {total_result.functions_scanned}")
@@ -559,7 +574,7 @@ def _render_text_report(
         key = _display_path(issue.file)
         by_file[key].append(issue)
 
-    _render_summary(filtered, total_result)
+    _render_summary(filtered, total_result, quiet=args.quiet)
     _render_scorecard(args, per_package, total_result)
     _render_affected_files(by_file, args.top)
     _render_cross_file_findings(filtered)
