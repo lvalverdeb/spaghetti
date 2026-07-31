@@ -144,9 +144,23 @@ With `--json`, the report is a single JSON object to stdout:
       "package": "my-lib"
     }
   ],
-  "suppressed": 3
+  "suppressed": 3,
+  "suppression_help": "Silence a confirmed non-issue by adding '# spaghetti-ignore[rule-name]: reason' on the flagged line (or the line above).",
+  "ignored": [
+    {
+      "file": "src/legacy.py",
+      "line": 10,
+      "severity": "warning",
+      "rule": "bare-except",
+      "message": "Bare except: clause",
+      "package": "my-lib",
+      "reason": "reviewed, no issue"
+    }
+  ]
 }
 ```
+
+`ignored` lists the findings a `# spaghetti-ignore` marker actually silenced (each with its `reason`, if one was given), so a suppression is visible rather than invisible in the JSON report too.
 
 ## Remediation Plan
 
