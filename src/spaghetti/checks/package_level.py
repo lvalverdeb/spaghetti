@@ -7,6 +7,7 @@ import difflib
 from collections import defaultdict
 from pathlib import Path
 
+import spaghetti.config as _cfg
 from spaghetti.ast_helpers import (
     _dump_stmts,
     _is_trivial_body,
@@ -14,7 +15,6 @@ from spaghetti.ast_helpers import (
     _loc,
     _walk_with_class_context,
 )
-from spaghetti.config import MAX_MODULE_FAN_IN, MAX_MODULE_FAN_OUT, MIN_TWIN_FUNCTION_LINES
 from spaghetti.models import Issue, _display_path
 
 __all__ = [
@@ -217,7 +217,7 @@ def check_module_coupling_pkg(pkg_name: str, files: list[tuple[Path, ast.Module]
     for module, filepath in file_for_module.items():
         module_fan_out = len(graph.get(module, ()))
         module_fan_in = fan_in.get(module, 0)
-        if module_fan_in > MAX_MODULE_FAN_IN and module_fan_out > MAX_MODULE_FAN_OUT:
+        if module_fan_in > _cfg.MAX_MODULE_FAN_IN and module_fan_out > _cfg.MAX_MODULE_FAN_OUT:
             issues.append(
                 Issue(
                     file=filepath,
@@ -227,7 +227,7 @@ def check_module_coupling_pkg(pkg_name: str, files: list[tuple[Path, ast.Module]
                     package=pkg_name,
                     message=(
                         f"module {module} has fan-in={module_fan_in} and "
-                        f"fan-out={module_fan_out} (max {MAX_MODULE_FAN_IN}/{MAX_MODULE_FAN_OUT}) "
+                        f"fan-out={module_fan_out} (max {_cfg.MAX_MODULE_FAN_IN}/{_cfg.MAX_MODULE_FAN_OUT}) "
                         "— other modules depend on it heavily and it depends on other "
                         "modules heavily; consider splitting it or inverting some "
                         "dependencies (Dependency Inversion Principle)"
@@ -322,7 +322,7 @@ def check_sync_async_twins_pkg(
 
     for (filepath, class_name), by_name in scope_functions.items():
         for name, (node, is_async) in by_name.items():
-            if _line_count(node) < MIN_TWIN_FUNCTION_LINES:
+            if _line_count(node) < _cfg.MIN_TWIN_FUNCTION_LINES:
                 continue
             for candidate in _twin_candidates(name):
                 if candidate == name or candidate not in by_name:

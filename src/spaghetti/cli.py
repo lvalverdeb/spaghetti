@@ -6,14 +6,32 @@ import argparse
 import asyncio
 import sys
 from collections import defaultdict
+from dataclasses import dataclass, field
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 import yaml
 
+from spaghetti.baseline import (
+    BaselineEntry,
+    BaselineError,
+    load_baseline,
+    save_baseline,
+    split_against_baseline,
+)
 from spaghetti.config import BANNER_WIDTH, LINES_PER_KLOC
+from spaghetti.diff_filter import DiffError, changed_lines, restrict_to_changed
 from spaghetti.models import Issue, ScanConfig, ScanResult, _display_path
+from spaghetti.sarif import build_sarif
 from spaghetti.scoring import compute_score, plan_report
+from spaghetti.settings import (
+    FAIL_ON_CHOICES,
+    Settings,
+    SettingsError,
+    apply_settings,
+    find_pyproject,
+    load_settings,
+)
 
 __all__ = ["main", "resolve_packages", "discover_cwd_packages"]
 
@@ -211,9 +229,53 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Minimum severity to display (default: info)",
     )
     parser.add_argument(
+        "--format",
+        choices=["text", "json", "sarif"],
+        default=None,
+        help="Report format (default: text). 'sarif' emits SARIF 2.1.0 for code-scanning tools.",
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
-        help="Output as JSON",
+        help="Shorthand for --format json",
+    )
+    parser.add_argument(
+        "--fail-on",
+        choices=list(FAIL_ON_CHOICES),
+        default=None,
+        help=(
+            "Lowest severity that makes the exit code non-zero (default: warning, i.e. "
+            "exit 2 on errors, 1 on warnings). 'never' always exits 0."
+        ),
+    )
+    parser.add_argument(
+        "--baseline",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help=(
+            "Baseline file of accepted findings (by fingerprint). Findings in it are hidden "
+            "and don't affect the exit code. Can also be set in [tool.spaghetti]."
+        ),
+    )
+    parser.add_argument(
+        "--update-baseline",
+        action="store_true",
+        help="Write every current finding to the baseline file and exit 0",
+    )
+    parser.add_argument(
+        "--diff-base",
+        default=None,
+        metavar="REF",
+        help=(
+            "Report only findings on lines added or modified since git REF "
+            "(e.g. origin/main). Requires the scanned paths to be inside a git repo."
+        ),
+    )
+    parser.add_argument(
+        "--no-pyproject",
+        action="store_true",
+        help="Ignore any [tool.spaghetti] table found in a pyproject.toml above the cwd",
     )
     parser.add_argument(
         "--top",
@@ -248,7 +310,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 
 
 def _resolve_registry(
-    args: argparse.Namespace, parser: argparse.ArgumentParser
+    args: argparse.Namespace, parser: argparse.ArgumentParser, settings: Settings
 ) -> tuple[list[str], frozenset[str]]:
     """Populate ``detector.PACKAGES`` from the CLI flags (or cwd discovery),
     validate the requested package names and paths, and return the effective
@@ -265,18 +327,20 @@ def _resolve_registry(
     # registry to fall back to in that path either (`defaults={}`) — a
     # generic pip-install-anywhere tool shouldn't assume it's running inside
     # this particular monorepo.
-    run_exclude = args.exclude
+    run_exclude = settings.exclude + args.exclude
     non_recursive: frozenset[str] = frozenset()
-    if args.config is None and not args.package_args:
+    if args.config is None and not args.package_args and not settings.packages:
         _det.PACKAGES, loose_root_name = discover_cwd_packages(Path.cwd())
-        run_exclude = args.exclude + DEFAULT_CWD_EXCLUDES
+        run_exclude = run_exclude + DEFAULT_CWD_EXCLUDES
         if loose_root_name is not None:
             non_recursive = frozenset({loose_root_name})
     else:
+        # ``settings.packages`` already reflects --config's ``packages:`` (which
+        # replaces any pyproject mapping), so only --package overlays remain.
         _det.PACKAGES = resolve_packages(
-            config_path=args.config,
+            config_path=None,
             package_args=args.package_args,
-            defaults={},
+            defaults=settings.packages,
             cwd=Path.cwd(),
         )
     if not _det.PACKAGES:
@@ -304,28 +368,160 @@ def _resolve_registry(
     return run_exclude, non_recursive
 
 
+def _load_run_settings(args: argparse.Namespace, parser: argparse.ArgumentParser) -> Settings:
+    try:
+        pyproject = None if args.no_pyproject else find_pyproject(Path.cwd())
+        return load_settings(pyproject=pyproject, yaml_path=args.config)
+    except SettingsError as exc:
+        parser.error(str(exc))
+
+
+@dataclass
+class _Gating:
+    """What the run hid from the report and why — surfaced in every format."""
+
+    diff_base: str | None = None
+    diff_hidden: int = 0
+    baseline_path: Path | None = None
+    baseline_used: bool = False
+    known: list[Issue] = field(default_factory=list)
+    fixed: list[BaselineEntry] = field(default_factory=list)
+
+    def notes(self) -> list[str]:
+        out: list[str] = []
+        if self.diff_base is not None:
+            out.append(
+                f"Changed lines only (vs {self.diff_base}): {self.diff_hidden} finding(s) "
+                "outside the diff hidden"
+            )
+        if self.baseline_used:
+            out.append(
+                f"Baseline {self.baseline_path}: {len(self.known)} known finding(s) hidden, "
+                f"{len(self.fixed)} fixed since the baseline was written"
+            )
+        return out
+
+    def json(self) -> dict[str, object]:
+        return {
+            "diff_base": (
+                {"ref": self.diff_base, "hidden": self.diff_hidden}
+                if self.diff_base is not None
+                else None
+            ),
+            "baseline": (
+                {
+                    "path": str(self.baseline_path),
+                    "known": len(self.known),
+                    "fixed": [
+                        {
+                            "fingerprint": e.fingerprint,
+                            "rule": e.rule,
+                            "file": e.file,
+                            "message": e.message,
+                        }
+                        for e in self.fixed
+                    ],
+                }
+                if self.baseline_used
+                else None
+            ),
+        }
+
+
+def _apply_diff_base(
+    issues: list[Issue], args: argparse.Namespace, parser: argparse.ArgumentParser, gating: _Gating
+) -> list[Issue]:
+    if args.diff_base is None:
+        return issues
+    try:
+        changed = changed_lines(args.diff_base, Path.cwd())
+    except DiffError as exc:
+        parser.error(f"--diff-base: {exc}")
+    split = restrict_to_changed(issues, changed)
+    gating.diff_base = args.diff_base
+    gating.diff_hidden = split.hidden
+    return split.kept
+
+
+def _apply_baseline(
+    issues: list[Issue],
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+    settings: Settings,
+    gating: _Gating,
+) -> list[Issue]:
+    path = args.baseline if args.baseline is not None else settings.baseline
+    if path is None:
+        if args.update_baseline:
+            parser.error("--update-baseline needs --baseline PATH or a 'baseline' setting")
+        return issues
+    gating.baseline_path = path
+    if args.update_baseline:
+        return issues  # handled by main() after the full issue list is known
+    try:
+        baseline = load_baseline(path)
+    except BaselineError as exc:
+        parser.error(str(exc))
+    if not path.exists():
+        return issues
+    split = split_against_baseline(issues, baseline)
+    gating.baseline_used = True
+    gating.known = split.known
+    gating.fixed = split.fixed
+    return split.new
+
+
+def _output_format(args: argparse.Namespace) -> str:
+    if args.format is not None:
+        return args.format
+    return "json" if args.json else "text"
+
+
 def _emit_report(
     args: argparse.Namespace,
     filtered: list[Issue],
     total_result: ScanResult,
     per_package: dict[str, ScanResult],
+    gating: _Gating,
 ) -> None:
+    import json
+
+    fmt = _output_format(args)
     if args.plan:
         print(plan_report(filtered, top=args.top))
-    elif args.json:
-        import json
-
-        print(json.dumps(_json_report(filtered, total_result, per_package), indent=_JSON_INDENT))
+    elif fmt == "json":
+        report = _json_report(filtered, total_result, per_package)
+        report.update(gating.json())
+        print(json.dumps(report, indent=_JSON_INDENT))
+    elif fmt == "sarif":
+        sarif = build_sarif(
+            new=filtered,
+            known=gating.known,
+            ignored=total_result.ignored,
+            tool_version=_spaghetti_version(),
+            root=Path.cwd(),
+            baseline_used=gating.baseline_used,
+        )
+        print(json.dumps(sarif, indent=_JSON_INDENT))
     else:
-        _render_text_report(filtered, total_result, per_package, args)
+        _render_text_report(filtered, total_result, per_package, args, notes=gating.notes())
 
 
-def _exit_code(total_result: ScanResult) -> int:
-    if total_result.error_count > 0:
+_DEFAULT_FAIL_ON = "warning"
+
+
+def _exit_code(issues: list[Issue], fail_on: str) -> int:
+    """Worst severity among ``issues`` at or above ``fail_on`` decides the code:
+    errors → 2, anything else that trips the policy → 1, clean → 0."""
+    if fail_on == "never":
+        return _EXIT_CLEAN
+    threshold = _SEVERITY_ORDER[fail_on]
+    tripping = [i for i in issues if _SEVERITY_ORDER[i.severity] >= threshold]
+    if not tripping:
+        return _EXIT_CLEAN
+    if any(i.severity == "error" for i in tripping):
         return _EXIT_ERROR
-    if total_result.warning_count > 0:
-        return _EXIT_WARNING
-    return _EXIT_CLEAN
+    return _EXIT_WARNING
 
 
 def main() -> int:
@@ -333,7 +529,9 @@ def main() -> int:
     args = parser.parse_args()
     from spaghetti.scanner import review_packages_concurrently
 
-    run_exclude, non_recursive = _resolve_registry(args, parser)
+    settings = _load_run_settings(args, parser)
+    overrides = apply_settings(settings)
+    run_exclude, non_recursive = _resolve_registry(args, parser, settings)
     min_severity = _SEVERITY_ORDER[args.severity]
 
     per_package: dict[str, ScanResult] = asyncio.run(
@@ -345,6 +543,7 @@ def main() -> int:
                 twin_similarity=args.twin_similarity,
             ),
             non_recursive=non_recursive,
+            overrides=overrides,
         )
     )
 
@@ -352,9 +551,26 @@ def main() -> int:
     for pkg_name in args.packages:
         total_result.extend(per_package[pkg_name])
 
-    filtered = [i for i in total_result.issues if _SEVERITY_ORDER[i.severity] >= min_severity]
-    _emit_report(args, filtered, total_result, per_package)
-    return _exit_code(total_result)
+    gating = _Gating()
+    gated = _apply_baseline(total_result.issues, args, parser, settings, gating)
+    if args.update_baseline:
+        assert gating.baseline_path is not None
+        save_baseline(
+            gating.baseline_path,
+            total_result.issues,
+            generated_by=f"spaghetti {_spaghetti_version()}",
+        )
+        print(
+            f"Wrote {len(total_result.issues)} finding(s) to {gating.baseline_path}",
+            file=sys.stderr,
+        )
+        return _EXIT_CLEAN
+    gated = _apply_diff_base(gated, args, parser, gating)
+
+    filtered = [i for i in gated if _SEVERITY_ORDER[i.severity] >= min_severity]
+    _emit_report(args, filtered, total_result, per_package, gating)
+    fail_on = args.fail_on or settings.fail_on or _DEFAULT_FAIL_ON
+    return _exit_code(gated, fail_on)
 
 
 JSON_SCHEMA_VERSION = 1
@@ -425,7 +641,11 @@ def _severity_counts(issues: list[Issue]) -> tuple[int, int, int]:
 
 
 def _render_summary(
-    filtered: list[Issue], total_result: ScanResult, *, quiet: bool = False
+    filtered: list[Issue],
+    total_result: ScanResult,
+    *,
+    quiet: bool = False,
+    notes: list[str] | None = None,
 ) -> None:
     if not quiet:
         print("=" * BANNER_WIDTH)
@@ -442,6 +662,8 @@ def _render_summary(
     print(f"    Info:            {infos}")
     if total_result.suppressed:
         print(f"  Suppressed:        {total_result.suppressed} (inline spaghetti-ignore markers)")
+    for note in notes or ():
+        print(f"  {note}")
     if filtered:
         print(
             "  Silence a confirmed non-issue: add "
@@ -599,6 +821,8 @@ def _render_text_report(
     total_result: ScanResult,
     per_package: dict[str, ScanResult],
     args: argparse.Namespace,
+    *,
+    notes: list[str] | None = None,
 ) -> None:
     """Render the full text report to stdout."""
     by_package: dict[str, list[Issue]] = defaultdict(list)
@@ -610,7 +834,7 @@ def _render_text_report(
         key = _display_path(issue.file)
         by_file[key].append(issue)
 
-    _render_summary(filtered, total_result, quiet=args.quiet)
+    _render_summary(filtered, total_result, quiet=args.quiet, notes=notes)
     _render_scorecard(args, per_package, total_result)
     _render_affected_files(by_file, args.top)
     _render_cross_file_findings(filtered)

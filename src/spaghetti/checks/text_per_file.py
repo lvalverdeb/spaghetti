@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from spaghetti.config import MAX_FILE_LINES, TODO_RE
+import spaghetti.config as _cfg
+from spaghetti.config import TODO_RE
 from spaghetti.models import Issue
 
 __all__ = ["check_long_file", "check_todo_markers"]
@@ -15,7 +16,7 @@ _ELLIPSIS = "..."
 
 def check_long_file(source: str, filepath: Path, pkg: str) -> list[Issue]:
     count = len(source.splitlines())
-    if count > MAX_FILE_LINES:
+    if count > _cfg.MAX_FILE_LINES:
         return [
             Issue(
                 file=filepath,
@@ -23,7 +24,7 @@ def check_long_file(source: str, filepath: Path, pkg: str) -> list[Issue]:
                 severity="warning",
                 rule="long-file",
                 package=pkg,
-                message=f"File is {count} lines (max {MAX_FILE_LINES})",
+                message=f"File is {count} lines (max {_cfg.MAX_FILE_LINES})",
             )
         ]
     return []

@@ -1,0 +1,77 @@
+name: "spaghetti"
+description: "Structural code-quality gate for Python: god classes, import cycles, duplicated bodies, sync/async twins, and 35 more rules. Uploads SARIF to GitHub code scanning."
+author: "Luis Valverde"
+branding:
+  icon: "git-merge"
+  color: "orange"
+
+inputs:
+  args:
+    description: "Extra arguments passed to spaghetti (e.g. '--package my-lib=src/my_lib --fail-on error'). With none, spaghetti reads [tool.spaghetti] from pyproject.toml or auto-discovers packages in the working directory."
+    required: false
+    default: ""
+  working-directory:
+    description: "Directory to run in"
+    required: false
+    default: "."
+  version:
+    description: "spaghetti-detector version to install from PyPI (a pip specifier)"
+    required: false
+    default: ""
+  diff-base:
+    description: "Only report findings on changed lines relative to this git ref (e.g. origin/${{ github.base_ref }}). Empty disables."
+    required: false
+    default: ""
+  upload-sarif:
+    description: "Upload results to GitHub code scanning (needs 'security-events: write')"
+    required: false
+    default: "true"
+  fail-on:
+    description: "Lowest severity that fails the step: error, warning, info, never"
+    required: false
+    default: "warning"
+
+outputs:
+  sarif-file:
+    description: "Path of the SARIF file produced"
+    value: ${{ steps.scan.outputs.sarif }}
+  exit-code:
+    description: "spaghetti's own exit code (0 clean, 1 warnings, 2 errors)"
+    value: ${{ steps.scan.outputs.code }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install spaghetti
+      shell: bash
+      run: |
+        spec="spaghetti-detector${{ inputs.version }}"
+        python -m pip install --quiet --disable-pip-version-check "$spec"
+        spaghetti --version
+
+    - name: Scan
+      id: scan
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        set +e
+        extra=""
+        if [ -n "${{ inputs.diff-base }}" ]; then
+          git fetch --no-tags --depth=1 origin "+refs/heads/${{ inputs.diff-base }}:refs/remotes/origin/${{ inputs.diff-base }}" 2>/dev/null || true
+          extra="--diff-base ${{ inputs.diff-base }}"
+        fi
+        out="$RUNNER_TEMP/spaghetti.sarif"
+        spaghetti --format sarif --fail-on "${{ inputs.fail-on }}" $extra ${{ inputs.args }} > "$out"
+        code=$?
+        echo "sarif=$out" >> "$GITHUB_OUTPUT"
+        echo "code=$code" >> "$GITHUB_OUTPUT"
+        # Human-readable copy for the step log
+        spaghetti --fail-on never -q $extra ${{ inputs.args }} || true
+        exit $code
+
+    - name: Upload SARIF
+      if: ${{ always() && inputs.upload-sarif == 'true' && steps.scan.outputs.sarif != '' }}
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: ${{ steps.scan.outputs.sarif }}
+        category: spaghetti

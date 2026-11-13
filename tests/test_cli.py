@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -366,3 +368,180 @@ def test_json_report_validates_against_committed_schema(tmp_path: Path):
     assert report["packages"]["pkg"]["files"] == 1
     assert report["summary"]["grade"] in "ABCDF"
     assert report["ignored"][0]["reason"] == "demo"
+
+
+# ── Phase 1 flags: settings, baseline, --diff-base, --fail-on, --format ─────
+
+
+def _run_cli(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, "-m", "spaghetti.detector", *args],
+        capture_output=True,
+        text=True,
+        cwd=cwd,
+    )
+
+
+def _git(cwd: Path, *args: str) -> None:
+    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
+
+
+@pytest.fixture
+def project(tmp_path: Path) -> Path:
+    """A git repo with a pyproject [tool.spaghetti] table and one messy package."""
+    root = tmp_path / "proj"
+    (root / "src" / "mylib" / "routes").mkdir(parents=True)
+    (root / "pyproject.toml").write_text(
+        "[tool.spaghetti]\n"
+        'fail-on = "error"\n'
+        'baseline = ".spaghetti-baseline.json"\n'
+        'library-packages = ["mylib"]\n'
+        "[tool.spaghetti.packages]\n"
+        'mylib = "src/mylib"\n'
+        "[tool.spaghetti.thresholds]\n"
+        "max-func-params = 0\n"
+        "[tool.spaghetti.rules]\n"
+        'missing-param-type = "off"\n'
+        'missing-return-type = "error"\n'
+        "[tool.spaghetti.layers.mylib]\n"
+        '"routes/" = ["mylib.db."]\n'
+    )
+    (root / "src" / "mylib" / "m.py").write_text(
+        "def f(x):\n    a = 1\n    b = 2\n    c = 3\n    return a + b + c + x\n"
+    )
+    (root / "src" / "mylib" / "routes" / "r.py").write_text(
+        "from fastapi import APIRouter\nfrom mylib.db.conn import C\n"
+    )
+    _git(root, "init", "-q")
+    _git(root, "config", "user.email", "t@example.com")
+    _git(root, "config", "user.name", "t")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-qm", "init")
+    return root
+
+
+def test_pyproject_settings_drive_the_scan(project: Path):
+    proc = _run_cli(project, "--json")
+    assert proc.returncode == 2, proc.stderr  # fail-on=error and errors exist
+    report = json.loads(proc.stdout)
+    rules = {(i["rule"], i["severity"]) for i in report["issues"]}
+    assert ("missing-return-type", "error") in rules  # severity override
+    assert not any(r == "missing-param-type" for r, _ in rules)  # rule off
+    assert ("layer-violation", "error") in rules  # layers table
+    assert ("transport-in-library", "error") in rules  # library-packages
+    assert ("too-many-params", "warning") in rules  # threshold lowered to 0
+    assert report["baseline"] is None and report["diff_base"] is None
+
+
+def test_no_pyproject_flag_ignores_the_table(project: Path):
+    proc = _run_cli(project, "--no-pyproject", "--package", "mylib=src/mylib", "--json")
+    report = json.loads(proc.stdout)
+    assert any(i["rule"] == "missing-param-type" for i in report["issues"])
+    assert not any(i["rule"] == "layer-violation" for i in report["issues"])
+
+
+def test_invalid_pyproject_is_an_error_not_a_silent_fallback(project: Path):
+    (project / "pyproject.toml").write_text("[tool.spaghetti]\nfail-on = \n")
+    proc = _run_cli(project, "--json")
+    assert proc.returncode == 2
+    assert "invalid TOML" in proc.stderr
+    assert proc.stdout == ""
+
+
+def test_unknown_threshold_key_is_reported(project: Path):
+    pyproject = project / "pyproject.toml"
+    pyproject.write_text(
+        pyproject.read_text().replace("[tool.spaghetti]\n", "[tool.spaghetti]\nbogus = 1\n")
+    )
+    proc = _run_cli(project, "--json")
+    assert proc.returncode == 2
+    assert "unknown setting(s): bogus" in proc.stderr
+
+
+def test_fail_on_policy_controls_exit_code(project: Path):
+    assert _run_cli(project, "--fail-on", "never").returncode == 0
+    assert _run_cli(project, "--fail-on", "error").returncode == 2
+    # drop the error-level rules: only warnings/infos remain
+    (project / "src" / "mylib" / "routes" / "r.py").unlink()
+    (project / "pyproject.toml").write_text(
+        "[tool.spaghetti]\n[tool.spaghetti.packages]\nmylib = 'src/mylib'\n"
+    )
+    assert _run_cli(project, "--fail-on", "error").returncode == 0
+    assert _run_cli(project, "--fail-on", "warning").returncode == 1
+    assert _run_cli(project).returncode == 1  # default policy is warning
+
+
+def test_baseline_roundtrip_hides_known_and_reports_fixed(project: Path):
+    write = _run_cli(project, "--update-baseline")
+    assert write.returncode == 0, write.stderr
+    baseline_path = project / ".spaghetti-baseline.json"
+    assert baseline_path.exists()
+    n = len(json.loads(baseline_path.read_text())["findings"])
+    assert n >= 5
+
+    gated = _run_cli(project, "--json")
+    assert gated.returncode == 0  # everything is baselined
+    report = json.loads(gated.stdout)
+    assert report["issues"] == []
+    assert report["baseline"]["known"] == n
+    assert report["baseline"]["fixed"] == []
+    assert report["summary"]["issues"] == n  # summary still counts the full picture
+
+    # Fix one finding and add a new one: the new one shows, the fixed one is listed.
+    (project / "src" / "mylib" / "routes" / "r.py").write_text("from mylib.db.conn import C\n")
+    (project / "src" / "mylib" / "m.py").write_text("def g(y):\n    return y\n")
+    after = json.loads(_run_cli(project, "--json").stdout)
+    assert {i["rule"] for i in after["issues"]} == {"missing-return-type", "too-many-params"}
+    assert {e["rule"] for e in after["baseline"]["fixed"]} >= {"transport-in-library"}
+
+
+def test_update_baseline_without_a_path_is_an_error(project: Path):
+    (project / "pyproject.toml").write_text(
+        "[tool.spaghetti]\n[tool.spaghetti.packages]\nmylib = 'src/mylib'\n"
+    )
+    proc = _run_cli(project, "--update-baseline")
+    assert proc.returncode == 2
+    assert "--update-baseline needs" in proc.stderr
+
+
+def test_diff_base_restricts_to_changed_lines(project: Path):
+    with (project / "src" / "mylib" / "m.py").open("a") as fh:
+        fh.write("\n\ndef g(y):\n    return y\n")
+    proc = _run_cli(project, "--diff-base", "HEAD", "--json", "--fail-on", "never")
+    report = json.loads(proc.stdout)
+    assert {i["rule"] for i in report["issues"]} == {"missing-return-type", "too-many-params"}
+    assert all(i["message"].startswith("g()") for i in report["issues"])
+    assert report["diff_base"]["ref"] == "HEAD"
+    assert report["diff_base"]["hidden"] >= 5
+    assert "Changed lines only (vs HEAD)" in _run_cli(project, "--diff-base", "HEAD", "-q").stdout
+
+
+def test_diff_base_outside_a_repo_is_an_error(tmp_path: Path):
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "m.py").write_text("x = 1\n")
+    proc = _run_cli(tmp_path, "--package", "pkg=pkg", "--diff-base", "HEAD")
+    assert proc.returncode == 2
+    assert "--diff-base" in proc.stderr
+
+
+def test_sarif_output_is_well_formed(project: Path):
+    _run_cli(project, "--update-baseline")
+    (project / "src" / "mylib" / "m.py").write_text(
+        "def g(y):  # spaghetti-ignore[missing-return-type]: demo\n    return y\n"
+    )
+    proc = _run_cli(project, "--format", "sarif", "--fail-on", "never")
+    assert proc.returncode == 0, proc.stderr
+    sarif = json.loads(proc.stdout)
+    assert sarif["version"] == "2.1.0"
+    run = sarif["runs"][0]
+    assert run["tool"]["driver"]["name"] == "spaghetti"
+    states = {r.get("baselineState") for r in run["results"]}
+    assert "unchanged" in states
+    suppressed = [r for r in run["results"] if "suppressions" in r]
+    assert suppressed and suppressed[0]["suppressions"][0]["justification"] == "demo"
+    uris = {
+        r["locations"][0]["physicalLocation"]["artifactLocation"]["uri"] for r in run["results"]
+    }
+    assert all(not u.startswith("/") for u in uris)
+    assert "src/mylib/m.py" in uris

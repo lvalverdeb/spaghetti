@@ -21,27 +21,6 @@ from spaghetti.ast_helpers import (
     _nesting_depth,
     _param_has_type_hint,
 )
-from spaghetti.config import (
-    COMPLEXITY_THRESHOLD,
-    ERROR_ESCALATION_MULTIPLIER,
-    LONG_FUNCTION_FLAT_NESTING_MAX,
-    MAX_CLASS_ATTRS,
-    MAX_CLASS_LCOM4,
-    MAX_CLASS_METHODS,
-    MAX_CLASS_WMC,
-    MAX_DECORATORS,
-    MAX_FUNC_PARAMS,
-    MAX_FUNCTION_LINES,
-    MAX_INHERITANCE_DEPTH,
-    MAX_MESSAGE_CHAIN_DEPTH,
-    MAX_NESTING_DEPTH,
-    MAX_PUBLIC_SYMBOLS,
-    MAX_RETURNS,
-    MIN_BOOLEAN_FLAGS,
-    MIN_CLASS_METHODS,
-    MIN_METHODS_FOR_COHESION,
-    MIN_STATEFUL_METHOD_FRACTION,
-)
 from spaghetti.config import DUNDER_RE as _DUNDER_RE
 from spaghetti.models import Issue, Severity
 
@@ -59,7 +38,10 @@ def check_long_functions(tree: ast.Module, filepath: Path, pkg: str) -> list[Iss
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             lines = _line_count(node)
-            if lines > MAX_FUNCTION_LINES and _nesting_depth(node) > LONG_FUNCTION_FLAT_NESTING_MAX:
+            if (
+                lines > _cfg.MAX_FUNCTION_LINES
+                and _nesting_depth(node) > _cfg.LONG_FUNCTION_FLAT_NESTING_MAX
+            ):
                 issues.append(
                     Issue(
                         file=filepath,
@@ -69,7 +51,7 @@ def check_long_functions(tree: ast.Module, filepath: Path, pkg: str) -> list[Iss
                         rule="long-function",
                         package=pkg,
                         message=(
-                            f"{node.name}() is {lines} lines (max {MAX_FUNCTION_LINES}) — "
+                            f"{node.name}() is {lines} lines (max {_cfg.MAX_FUNCTION_LINES}) — "
                             "extract logical chunks into named helper functions (Extract "
                             "Method)"
                         ),
@@ -86,7 +68,7 @@ def check_complexity(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             cc = _cyclomatic_complexity(node)
-            if cc > COMPLEXITY_THRESHOLD:
+            if cc > _cfg.COMPLEXITY_THRESHOLD:
                 issues.append(
                     Issue(
                         file=filepath,
@@ -94,12 +76,12 @@ def check_complexity(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
                         **_loc(node),
                         severity=(
                             "error"
-                            if cc > COMPLEXITY_THRESHOLD * ERROR_ESCALATION_MULTIPLIER
+                            if cc > _cfg.COMPLEXITY_THRESHOLD * _cfg.ERROR_ESCALATION_MULTIPLIER
                             else "warning"
                         ),
                         rule="high-complexity",
                         package=pkg,
-                        message=f"{node.name}() has complexity {cc} (max {COMPLEXITY_THRESHOLD})",
+                        message=f"{node.name}() has complexity {cc} (max {_cfg.COMPLEXITY_THRESHOLD})",
                     )
                 )
     return issues
@@ -157,7 +139,7 @@ def check_excessive_params(tree: ast.Module, filepath: Path, pkg: str) -> list[I
                 total += 1
             if node.args.kwarg:
                 total += 1
-            if total > MAX_FUNC_PARAMS:
+            if total > _cfg.MAX_FUNC_PARAMS:
                 issues.append(
                     Issue(
                         file=filepath,
@@ -167,7 +149,7 @@ def check_excessive_params(tree: ast.Module, filepath: Path, pkg: str) -> list[I
                         rule="too-many-params",
                         package=pkg,
                         message=(
-                            f"{node.name}() has {total} params (max {MAX_FUNC_PARAMS}) — "
+                            f"{node.name}() has {total} params (max {_cfg.MAX_FUNC_PARAMS}) — "
                             "consider a Parameter Object (a dataclass or Pydantic model "
                             "bundling the related fields) instead"
                         ),
@@ -185,7 +167,7 @@ def check_excessive_returns(tree: ast.Module, filepath: Path, pkg: str) -> list[
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             n_returns = _count_nested_returns(node)
-            if n_returns > MAX_RETURNS:
+            if n_returns > _cfg.MAX_RETURNS:
                 issues.append(
                     Issue(
                         file=filepath,
@@ -196,7 +178,7 @@ def check_excessive_returns(tree: ast.Module, filepath: Path, pkg: str) -> list[
                         package=pkg,
                         message=(
                             f"{node.name}() has {n_returns} nested return statements "
-                            f"(max {MAX_RETURNS}) — consider a Return Object bundling the "
+                            f"(max {_cfg.MAX_RETURNS}) — consider a Return Object bundling the "
                             "result and building it up to a single return"
                         ),
                     )
@@ -229,7 +211,7 @@ def check_boolean_flag_params(tree: ast.Module, filepath: Path, pkg: str) -> lis
                     and isinstance(default.value, bool)
                 ):
                     flags.append(arg.arg)
-            if len(flags) >= MIN_BOOLEAN_FLAGS:
+            if len(flags) >= _cfg.MIN_BOOLEAN_FLAGS:
                 issues.append(
                     Issue(
                         file=filepath,
@@ -257,7 +239,7 @@ def check_deep_nesting(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             depth = _nesting_depth(node)
-            if depth > MAX_NESTING_DEPTH:
+            if depth > _cfg.MAX_NESTING_DEPTH:
                 issues.append(
                     Issue(
                         file=filepath,
@@ -267,7 +249,7 @@ def check_deep_nesting(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue
                         rule="deep-nesting",
                         package=pkg,
                         message=(
-                            f"{node.name}() has nesting depth {depth} (max {MAX_NESTING_DEPTH}) "
+                            f"{node.name}() has nesting depth {depth} (max {_cfg.MAX_NESTING_DEPTH}) "
                             "— use guard clauses (invert the condition, exit early) to keep "
                             "the happy path unindented"
                         ),
@@ -637,8 +619,12 @@ def _self_attrs_assigned(methods: list[ast.FunctionDef | ast.AsyncFunctionDef]) 
 def _god_class_severity(n_methods: int, n_attrs: int, wmc: int) -> Severity | None:
     """``None`` under every threshold; ``"error"`` once any metric passes the
     escalation multiple of its threshold; ``"warning"`` in between."""
-    metrics = ((n_methods, MAX_CLASS_METHODS), (n_attrs, MAX_CLASS_ATTRS), (wmc, MAX_CLASS_WMC))
-    if any(value > limit * ERROR_ESCALATION_MULTIPLIER for value, limit in metrics):
+    metrics = (
+        (n_methods, _cfg.MAX_CLASS_METHODS),
+        (n_attrs, _cfg.MAX_CLASS_ATTRS),
+        (wmc, _cfg.MAX_CLASS_WMC),
+    )
+    if any(value > limit * _cfg.ERROR_ESCALATION_MULTIPLIER for value, limit in metrics):
         return "error"
     if any(value > limit for value, limit in metrics):
         return "warning"
@@ -668,8 +654,8 @@ def check_god_class(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
                     package=pkg,
                     message=(
                         f"class {node.name} has {len(methods)} methods, {len(attrs)} attributes, "
-                        f"and total complexity (WMC) {wmc} (max {MAX_CLASS_METHODS}/"
-                        f"{MAX_CLASS_ATTRS}/{MAX_CLASS_WMC}) — consider splitting responsibilities"
+                        f"and total complexity (WMC) {wmc} (max {_cfg.MAX_CLASS_METHODS}/"
+                        f"{_cfg.MAX_CLASS_ATTRS}/{_cfg.MAX_CLASS_WMC}) — consider splitting responsibilities"
                     ),
                 )
             )
@@ -793,7 +779,7 @@ def check_low_cohesion(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue
     through shared state, directly or transitively. Anything higher means
     the class is really two or more unrelated classes glued together.
     ``@classmethod``/``@staticmethod`` methods are excluded entirely (see
-    ``_is_instance_method``), and classes under ``MIN_METHODS_FOR_COHESION``
+    ``_is_instance_method``), and classes under ``_cfg.MIN_METHODS_FOR_COHESION``
     *instance* methods are skipped — too little surface to meaningfully split.
 
     Also skipped for classes already exempt from ``lazy-class`` (Pydantic
@@ -816,7 +802,7 @@ def check_low_cohesion(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue
     Also skipped for interface declarations (see ``_is_interface_class``):
     deliberately stateless by design, so LCOM4 has nothing to measure. The
     same reasoning applies more generally: a class where fewer than
-    ``MIN_STATEFUL_METHOD_FRACTION`` of its methods reference *any*
+    ``_cfg.MIN_STATEFUL_METHOD_FRACTION`` of its methods reference *any*
     ``self.<attr>`` data field — an essentially stateless Strategy/Handler-
     pattern implementation, common in this codebase (see e.g.
     ``boti_data.gateway.sql_strategy.SqlAlchemyStrategy``, which implements
@@ -846,15 +832,15 @@ def check_low_cohesion(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue
             and _is_instance_method(n)
             and not _is_pure_pass_through(n)
         ]
-        if len(methods) < MIN_METHODS_FOR_COHESION:
+        if len(methods) < _cfg.MIN_METHODS_FOR_COHESION:
             continue
 
         attr_sets = [_method_self_attrs(method) for method in methods]
         stateful_fraction = sum(1 for s in attr_sets if s) / len(attr_sets)
-        if stateful_fraction < MIN_STATEFUL_METHOD_FRACTION:
+        if stateful_fraction < _cfg.MIN_STATEFUL_METHOD_FRACTION:
             continue
         lcom4 = _count_disjoint_clusters(attr_sets)
-        if lcom4 > MAX_CLASS_LCOM4:
+        if lcom4 > _cfg.MAX_CLASS_LCOM4:
             issues.append(
                 Issue(
                     file=filepath,
@@ -932,11 +918,11 @@ def check_layer_violations(tree: ast.Module, filepath: Path, pkg: str) -> list[I
 
 def check_transport_in_library(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
     """Detect FastAPI/HTTP imports in library packages."""
-    if pkg not in ("etl-core", "boti", "boti-data", "boti-dask"):
+    if pkg not in _cfg.LIBRARY_PACKAGES:
         return []
 
     issues: list[Issue] = []
-    transport_modules = {"fastapi", "starlette", "httpx", "flask", "django"}
+    transport_modules = _cfg.TRANSPORT_MODULES
 
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and node.module:
@@ -1284,7 +1270,7 @@ def _chain_root_name(node: ast.expr) -> str | None:
 
 
 def check_message_chains(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
-    """Flag method / attribute chains deeper than MAX_MESSAGE_CHAIN_DEPTH.
+    """Flag method / attribute chains deeper than _cfg.MAX_MESSAGE_CHAIN_DEPTH.
 
     Exempts chains rooted directly in an imported name (e.g. a fluent
     builder chained straight off a call to an imported class, like
@@ -1309,7 +1295,7 @@ def check_message_chains(tree: ast.Module, filepath: Path, pkg: str) -> list[Iss
         for child in ast.walk(node):
             if isinstance(child, ast.Attribute) or isinstance(child, ast.Call):
                 depth = _chain_depth(child)
-                if depth > MAX_MESSAGE_CHAIN_DEPTH:
+                if depth > _cfg.MAX_MESSAGE_CHAIN_DEPTH:
                     root = _chain_root_name(child)
                     if root is not None and root in imported:
                         continue
@@ -1321,7 +1307,7 @@ def check_message_chains(tree: ast.Module, filepath: Path, pkg: str) -> list[Iss
                             severity="info",
                             rule="message-chain",
                             package=pkg,
-                            message=f"method/attribute chain depth {depth} exceeds {MAX_MESSAGE_CHAIN_DEPTH} — split into intermediate variables",
+                            message=f"method/attribute chain depth {depth} exceeds {_cfg.MAX_MESSAGE_CHAIN_DEPTH} — split into intermediate variables",
                         )
                     )
                     break
@@ -1333,12 +1319,12 @@ def check_message_chains(tree: ast.Module, filepath: Path, pkg: str) -> list[Iss
 
 
 def check_excessive_decorators(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
-    """Flag functions or classes with more than MAX_DECORATORS decorators."""
+    """Flag functions or classes with more than _cfg.MAX_DECORATORS decorators."""
     issues: list[Issue] = []
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             n_decorators = len(node.decorator_list)
-            if n_decorators > MAX_DECORATORS:
+            if n_decorators > _cfg.MAX_DECORATORS:
                 kind = "class" if isinstance(node, ast.ClassDef) else "function"
                 issues.append(
                     Issue(
@@ -1348,7 +1334,7 @@ def check_excessive_decorators(tree: ast.Module, filepath: Path, pkg: str) -> li
                         severity="info",
                         rule="excessive-decorators",
                         package=pkg,
-                        message=f"{kind} '{node.name}' has {n_decorators} decorators (max {MAX_DECORATORS}) — consider a wrapper or composition",
+                        message=f"{kind} '{node.name}' has {n_decorators} decorators (max {_cfg.MAX_DECORATORS}) — consider a wrapper or composition",
                     )
                 )
     return issues
@@ -1784,7 +1770,7 @@ def check_lazy_class(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
         if _lazy_class_is_exempt(node):
             continue
         methods = [n for n in node.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
-        if len(methods) < MIN_CLASS_METHODS:
+        if len(methods) < _cfg.MIN_CLASS_METHODS:
             issues.append(
                 Issue(
                     file=filepath,
@@ -1812,7 +1798,7 @@ def _base_names(bases: list[ast.expr]) -> list[str]:
 
 
 def check_deep_inheritance(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
-    """Flag classes whose effective inheritance depth exceeds MAX_INHERITANCE_DEPTH."""
+    """Flag classes whose effective inheritance depth exceeds _cfg.MAX_INHERITANCE_DEPTH."""
     issues: list[Issue] = []
 
     # Indexed once so the BFS below does O(1) name lookups instead of
@@ -1837,7 +1823,7 @@ def check_deep_inheritance(tree: ast.Module, filepath: Path, pkg: str) -> list[I
             for other in classes_by_name.get(name, ()):
                 queue.extend(_base_names(other.bases))
         total_depth = len(seen)
-        if total_depth >= MAX_INHERITANCE_DEPTH:
+        if total_depth >= _cfg.MAX_INHERITANCE_DEPTH:
             issues.append(
                 Issue(
                     file=filepath,
@@ -1848,7 +1834,7 @@ def check_deep_inheritance(tree: ast.Module, filepath: Path, pkg: str) -> list[I
                     package=pkg,
                     message=(
                         f"class '{node.name}' has effective inheritance depth "
-                        f"{total_depth} (max {MAX_INHERITANCE_DEPTH}) — use composition, "
+                        f"{total_depth} (max {_cfg.MAX_INHERITANCE_DEPTH}) — use composition, "
                         "e.g. the Strategy pattern, instead of another inheritance level"
                     ),
                 )
@@ -1878,7 +1864,7 @@ def check_god_module(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
             public_funcs += 1
 
     total = public_classes + public_funcs
-    if total > MAX_PUBLIC_SYMBOLS:
+    if total > _cfg.MAX_PUBLIC_SYMBOLS:
         issues.append(
             Issue(
                 file=filepath,

@@ -110,9 +110,18 @@ BANNER_WIDTH = 72
 
 # ``{package-name: {path-prefix-within-package: [forbidden import prefixes]}}``.
 # Empty by default: there are no built-in architectural opinions about any
-# particular codebase. Populated from user configuration (see ROADMAP Phase 1);
-# until then ``layer-violation`` is inert unless a caller fills this in.
+# particular codebase. Populated from ``[tool.spaghetti.layers]`` (see
+# ``spaghetti.settings``); ``layer-violation`` is inert until then.
 LAYER_RULES: dict[str, dict[str, list[str]]] = {}
+
+# Packages ``transport-in-library`` applies to (a library must not import a web
+# framework). Empty by default; set via ``library-packages`` in settings.
+LIBRARY_PACKAGES: frozenset[str] = frozenset()
+TRANSPORT_MODULES: frozenset[str] = frozenset({"fastapi", "starlette", "httpx", "flask", "django"})
+
+# ``{rule-id: "off" | "info" | "warning" | "error"}`` from ``[tool.spaghetti.rules]``;
+# applied by ``detector.scan_package`` after the checks run.
+RULE_OVERRIDES: dict[str, str] = {}
 
 # ── Compiled regexes ──────────────────────────────────────────────────────────
 

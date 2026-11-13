@@ -29,7 +29,9 @@ import sys
 from collections import Counter
 from functools import partial
 from pathlib import Path
+from typing import Any
 
+import spaghetti.config as _cfg
 from spaghetti.ast_helpers import _file_line_count
 from spaghetti.checks import ALL_CHECKS, PACKAGE_CHECKS, SOURCE_CHECKS, check_magic_numbers
 from spaghetti.checks.package_level import (
@@ -151,6 +153,24 @@ def _assign_fingerprints(issues: list[Issue], pkg_path: Path) -> None:
         issue.fingerprint = hashlib.sha1(f"{key}\0{n}".encode()).hexdigest()[:16]
 
 
+def _apply_rule_overrides(issues: list[Issue]) -> list[Issue]:
+    """Honour ``[tool.spaghetti.rules]``: drop rules set to ``off``, rewrite
+    the severity of the rest. Runs before fingerprinting so a severity change
+    doesn't alter a finding's identity (the fingerprint ignores severity)."""
+    overrides = _cfg.RULE_OVERRIDES
+    if not overrides:
+        return issues
+    kept: list[Issue] = []
+    for issue in issues:
+        setting = overrides.get(issue.rule)
+        if setting == "off":
+            continue
+        if setting is not None:
+            issue.severity = setting  # type: ignore[assignment]
+        kept.append(issue)
+    return kept
+
+
 def _apply_suppressions(result: ScanResult, source_lines_by_file: dict[Path, list[str]]) -> None:
     kept: list[Issue] = []
     for issue in result.issues:
@@ -188,6 +208,7 @@ def scan_package(pkg_name: str, pkg_path: Path, *, config: ScanConfig) -> ScanRe
     )
     result.issues.extend(check_sync_async_twins_pkg(pkg_name, parsed_files, config.twin_similarity))
 
+    result.issues = _apply_rule_overrides(result.issues)
     for issue in result.issues:
         _normalize_columns(issue, source_lines_by_file.get(issue.file))
     _assign_fingerprints(result.issues, pkg_path)
@@ -195,10 +216,15 @@ def scan_package(pkg_name: str, pkg_path: Path, *, config: ScanConfig) -> ScanRe
     return result
 
 
-def _init_worker(worker_packages: dict[str, Path]) -> None:
-    """Initializer for process pool workers."""
+def _init_worker(worker_packages: dict[str, Path], overrides: dict[str, Any] | None = None) -> None:
+    """Initializer for process pool workers: replicate the parent's package
+    registry and applied settings into the fresh interpreter."""
     global PACKAGES  # spaghetti-ignore[scope-mutation]: intentional — worker init must set process-local registry
     PACKAGES = worker_packages
+    if overrides:
+        from spaghetti.settings import apply_overrides
+
+        apply_overrides(overrides)
 
 
 async def _review_one(
@@ -220,6 +246,7 @@ async def review_packages_concurrently(
     config: ScanConfig,
     executor: concurrent.futures.Executor | None = None,
     non_recursive: frozenset[str] = frozenset(),
+    overrides: dict[str, Any] | None = None,
 ) -> dict[str, ScanResult]:
     """Review every requested package at once, one worker process per package.
 
@@ -234,7 +261,7 @@ async def review_packages_concurrently(
     own_executor: concurrent.futures.Executor | None = None
     if executor is None:
         own_executor = concurrent.futures.ProcessPoolExecutor(
-            initializer=_init_worker, initargs=(PACKAGES,)
+            initializer=_init_worker, initargs=(PACKAGES, overrides)
         )
         executor = own_executor
     try:

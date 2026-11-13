@@ -90,9 +90,15 @@ uv run spaghetti --plan --top 10
 uv run spaghetti --config spaghetti.yaml
 uv run spaghetti --package my-lib=my-lib/src/my_lib
 uv run spaghetti -q
+uv run spaghetti --update-baseline           # accept today's findings; see Baseline
+uv run spaghetti --diff-base origin/main     # only findings on lines this branch changed
+uv run spaghetti --format sarif > spaghetti.sarif
+uv run spaghetti --fail-on error
 ```
 
-Exit codes: `0` (clean), `1` (warnings present), `2` (errors present) — safe to wire into CI as a gate.
+Exit codes: `0` (clean), `1` (warnings present), `2` (errors present). `--fail-on` changes which
+severities count (`error`, `warning` = default, `info`, `never`). Findings hidden by a baseline or
+by `--diff-base` never affect the exit code.
 
 ### Options
 
@@ -109,6 +115,12 @@ Exit codes: `0` (clean), `1` (warnings present), `2` (errors present) — safe t
 | `--min-duplicate-lines` | `5` | Minimum function length to consider for duplicate-body detection |
 | `--twin-similarity` | `0.6` | Minimum text-similarity ratio (0–1) to flag a sync/async twin pair |
 | `--plan` | off | Output a prioritised remediation plan instead of the standard report |
+| `--format` | `text` | `text`, `json`, or `sarif` (SARIF 2.1.0 for code-scanning tools) |
+| `--fail-on` | `warning` | Lowest severity that makes the exit code non-zero; `never` always exits 0 |
+| `--baseline` | from settings | Baseline file of accepted findings; see [Baseline](#baseline) |
+| `--update-baseline` | off | Write every current finding to the baseline file and exit 0 |
+| `--diff-base` | none | Git ref; report only findings on lines added or changed since it |
+| `--no-pyproject` | off | Ignore any `[tool.spaghetti]` table found above the working directory |
 | `--version` | — | Print the installed spaghetti-detector version and exit |
 
 Run `uv run spaghetti --help` for the full list.
@@ -217,6 +229,97 @@ The detector checks **40 rules** across four tiers:
 A `low-cohesion` (LCOM4) check also exists in the codebase but is intentionally not enabled by default — see the rule's own docstring for why.
 
 See [SDD.md](SDD.md) for the full rule catalog, thresholds, and scoring formula.
+
+## Configuration
+
+Settings live in `pyproject.toml` under `[tool.spaghetti]` (found by walking up from the
+working directory) and/or in the YAML file passed to `--config`. Precedence, lowest to
+highest: built-in defaults, `pyproject.toml`, `--config`, explicit CLI flags. A malformed
+file is an error, never a silent fallback to defaults.
+
+```toml
+[tool.spaghetti]
+exclude = ["tests/", "migrations/"]
+fail-on = "error"                        # error | warning | info | never
+baseline = ".spaghetti-baseline.json"    # relative to this file
+library-packages = ["my-lib"]            # packages `transport-in-library` applies to
+
+[tool.spaghetti.packages]                # same mapping as --config's `packages:`
+my-lib = "src/my_lib"
+
+[tool.spaghetti.thresholds]              # any numeric constant in spaghetti/config.py, kebab-case
+max-function-lines = 60
+complexity-threshold = 12
+max-class-methods = 30
+
+[tool.spaghetti.rules]                   # "off", or a severity override
+magic-number = "off"
+missing-return-type = "error"
+
+[tool.spaghetti.layers.my-lib]           # path prefix inside the package -> forbidden import prefixes
+"routes/" = ["my_lib.db."]
+"domain/" = ["fastapi", "sqlalchemy"]
+```
+
+The same keys work in the `--config` YAML (`thresholds:`, `rules:`, `layers:`, ...). Unknown
+keys, unknown rules, and unknown thresholds are rejected with the valid names listed.
+
+## Baseline
+
+A baseline lets a legacy codebase turn spaghetti on today with zero new findings and
+ratchet down from there.
+
+```bash
+uv run spaghetti --baseline .spaghetti-baseline.json --update-baseline   # accept everything, once
+uv run spaghetti --baseline .spaghetti-baseline.json                      # from now on: new findings only
+```
+
+Set `baseline` in `[tool.spaghetti]` and the flag becomes unnecessary. Findings are matched by
+their `fingerprint` (rule + package-relative path + message with digits stripped), so they
+survive line shifts and unrelated edits. Known findings are hidden from the report and the exit
+code; baseline entries no longer matched are listed as **fixed**, so progress is visible. Commit
+the baseline file and re-run `--update-baseline` when you want to move the ratchet.
+
+## Changed Lines Only
+
+```bash
+uv run spaghetti --diff-base origin/main
+```
+
+Reports only findings whose span touches a line added or modified since the ref (working tree
+included). This is the "new code" gate for pull requests. The summary states how many findings
+the filter hid. Package-level findings attributed to an untouched file (an `import-cycle` on an
+`__init__.py` you didn't edit) are hidden like any other.
+
+## SARIF and GitHub Code Scanning
+
+`--format sarif` emits SARIF 2.1.0: one result per finding with rule metadata, character
+columns, the fingerprint under `partialFingerprints`, `baselineState` when a baseline is in use,
+and inline `# spaghetti-ignore` suppressions as suppressed results with their justification.
+Upload it with `github/codeql-action/upload-sarif` and findings appear as code-scanning alerts
+and PR annotations.
+
+### GitHub Action
+
+```yaml
+- uses: lvalverdeb/spaghetti@v1
+  with:
+    diff-base: ${{ github.base_ref }}    # optional: changed lines only on PRs
+    fail-on: error
+    # args: --package my-lib=src/my_lib   # when there is no [tool.spaghetti] table
+```
+
+Needs `security-events: write` to upload SARIF (set `upload-sarif: false` otherwise).
+
+### pre-commit
+
+```yaml
+- repo: https://github.com/lvalverdeb/spaghetti
+  rev: v1.5.0
+  hooks:
+    - id: spaghetti
+      args: ["--diff-base", "HEAD"]
+```
 
 ## Configuring Packages
 

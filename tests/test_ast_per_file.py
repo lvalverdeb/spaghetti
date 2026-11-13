@@ -824,7 +824,8 @@ def test_check_layer_violations_has_no_builtin_rules():
 # ── Transport in Library ────────────────────────────────────────────────────
 
 
-def test_check_transport_flags_fastapi():
+def test_check_transport_flags_fastapi(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(_cfg, "LIBRARY_PACKAGES", frozenset({"etl-core"}))
     source = "from fastapi import APIRouter\n"
     issues = check_transport_in_library(_parse(source), Path("f.py"), "etl-core")
     assert len(issues) == 1

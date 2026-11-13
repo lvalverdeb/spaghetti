@@ -40,7 +40,11 @@ The spaghetti detector is a workspace-level quality gate. It scans Python packag
 
 ### 2.1 Concurrency Model
 
-Each package is scanned by a dedicated `SpaghettiReviewAgent` (extends `boti.core.Agent`) running via `asyncio.to_thread`. All package scans run concurrently via `asyncio.gather`. Results are aggregated into a single `ScanResult` and rendered as text or JSON.
+Each package is scanned in its own worker process (`concurrent.futures.ProcessPoolExecutor`); `review_packages_concurrently` gathers the futures with `asyncio.gather`. Workers receive the parent's package registry and applied settings through the pool initializer. Results are aggregated into a single `ScanResult` and rendered as text, JSON (schema v1), or SARIF 2.1.0.
+
+### 2.1.1 Settings and gating
+
+`spaghetti.settings` loads `[tool.spaghetti]` from `pyproject.toml` and/or the `--config` YAML and mutates `spaghetti.config` in place; every check reads thresholds from that module at call time. After the checks run, `detector.scan_package` applies `[tool.spaghetti.rules]` (drop `off` rules, rewrite severities), normalises columns, and assigns fingerprints. The CLI then applies, in order: the baseline (`spaghetti.baseline`, keyed by fingerprint), `--diff-base` (`spaghetti.diff_filter`, git hunks), and the `--severity` display floor. The exit code is computed from what survives the baseline and diff filters under the `--fail-on` policy; the display floor does not affect it.
 
 ### 2.2 Scoring
 
@@ -51,7 +55,7 @@ score = max(0, 100 - penalty_per_kloc)
 grade = A (≥90) | B (≥75) | C (≥60) | D (≥40) | F (<40)
 ```
 
-Exit codes: 0 = clean, 1 = warnings present, 2 = errors present.
+Exit codes: 0 = clean, 1 = warnings present, 2 = errors present, under the default `--fail-on warning`. `--fail-on error` ignores warnings, `--fail-on info` also trips on infos, `--fail-on never` always exits 0.
 
 ## 3. Rule Catalog
 
