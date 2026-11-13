@@ -35,6 +35,19 @@ def _cyclomatic_complexity(node: ast.AST) -> int:
     return complexity
 
 
+def _loc(node: ast.AST) -> dict[str, int | None]:
+    """``Issue`` location kwargs for ``node``: 1-based start column and the end
+    position. Columns are raw ``ast`` byte offsets at this point;
+    ``detector.scan_package`` rewrites them to character columns once the
+    source lines are at hand."""
+    end_col = getattr(node, "end_col_offset", None)
+    return {
+        "column": node.col_offset + 1,
+        "end_line": getattr(node, "end_lineno", None),
+        "end_column": end_col + 1 if end_col is not None else None,
+    }
+
+
 def _line_count(node: ast.AST) -> int:
     """End line - start line + 1."""
     if hasattr(node, "end_lineno") and node.end_lineno is not None:

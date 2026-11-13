@@ -10,11 +10,10 @@ Covers:
   - A representative sample of the AST/source-level check functions
   - compute_score()
   - scan_package() end-to-end against a small synthetic package on disk
-  - The concurrent Agent-based review orchestration (SpaghettiReviewAgent,
-    review_packages_concurrently): correctness, genuine concurrency (proven
-    deterministically via a threading.Barrier rather than wall-clock timing),
-    the close-barrier/_assert_open() guard, and exception propagation when
-    one package's scan fails.
+  - The concurrent review orchestration (review_packages_concurrently):
+    correctness, genuine concurrency (proven deterministically via a
+    threading.Barrier rather than wall-clock timing), and exception
+    propagation when one package's scan fails.
 """
 
 from __future__ import annotations
@@ -29,6 +28,7 @@ from pathlib import Path
 
 import pytest
 
+import spaghetti.config as _cfg
 from spaghetti import detector as ds
 from spaghetti.checks.ast_per_file import (
     check_bare_except,
@@ -360,68 +360,6 @@ def test_unsuppressed_issues_unaffected_elsewhere_in_file(tmp_path: Path):
     assert result.suppressed == 1
     # Suppressed issues must not count toward severity totals / exit codes.
     assert result.warning_count == len([i for i in result.issues if i.severity == "warning"])
-
-
-# ── SpaghettiReviewAgent ──────────────────────────────────────────────────────
-
-
-def test_agent_review_populates_result_and_calls_scan_package(
-    monkeypatch: pytest.MonkeyPatch, fake_package: Path
-):
-    captured: dict[str, object] = {}
-
-    def fake_scan_package(pkg_name, pkg_path, *, config):
-        captured.update(pkg_name=pkg_name, pkg_path=pkg_path, config=config)
-        return ScanResult(files_scanned=1)
-
-    monkeypatch.setattr(ds, "scan_package", fake_scan_package)
-
-    async def run() -> ScanResult:
-        # Use ThreadPoolExecutor: ProcessPoolExecutor would fail because
-        # fake_scan_package is a local closure that cannot be pickled.
-        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        try:
-            agent = ds.SpaghettiReviewAgent(
-                "fake_pkg",
-                fake_package,
-                config=ScanConfig(exclude=["x"], min_duplicate_lines=7, twin_similarity=0.5),
-                executor=executor,
-                skip_logger=True,
-            )
-            async with agent:
-                result = await agent.review()
-            assert agent.result is result
-            return result
-        finally:
-            executor.shutdown(wait=False)
-
-    result = asyncio.run(run())
-    assert result.files_scanned == 1
-    assert captured == {
-        "pkg_name": "fake_pkg",
-        "pkg_path": fake_package,
-        "config": ScanConfig(exclude=["x"], min_duplicate_lines=7, twin_similarity=0.5),
-    }
-
-
-def test_agent_review_after_close_raises():
-    async def run() -> None:
-        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        try:
-            agent = ds.SpaghettiReviewAgent(
-                "fake_pkg",
-                Path("/nonexistent"),
-                config=ScanConfig(exclude=[], min_duplicate_lines=5, twin_similarity=0.6),
-                executor=executor,
-                skip_logger=True,
-            )
-            agent.close()
-            with pytest.raises(RuntimeError, match="is closed"):
-                await agent.review()
-        finally:
-            executor.shutdown(wait=False)
-
-    asyncio.run(run())
 
 
 # ── review_packages_concurrently() ───────────────────────────────────────────
@@ -1517,7 +1455,11 @@ def test_check_low_cohesion_still_flags_real_split_with_method_calls_present():
 # ── Layer Violations ─────────────────────────────────────────────────────────
 
 
+_DEMO_LAYER_RULES = {"etl-demo": {"routes/": ["boti_data.", "boti.", "boti_dask."]}}
+
+
 def test_check_layer_violations_flags_forbidden_import(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(_cfg, "LAYER_RULES", _DEMO_LAYER_RULES)
     monkeypatch.setattr(ds, "PACKAGES", {"etl-demo": Path("/fake/etl-demo/src/etl_demo")})
     pkg_dir = Path("/fake/etl-demo/src/etl_demo/routes")
     source = "from boti_data.db.sql_resource import AsyncSqlDatabaseResource\n"
@@ -1528,6 +1470,7 @@ def test_check_layer_violations_flags_forbidden_import(monkeypatch: pytest.Monke
 
 
 def test_check_layer_violations_clean(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(_cfg, "LAYER_RULES", _DEMO_LAYER_RULES)
     monkeypatch.setattr(ds, "PACKAGES", {"etl-demo": Path("/fake/etl-demo/src/etl_demo")})
     pkg_dir = Path("/fake/etl-demo/src/etl_demo/routes")
     source = "from etl_demo.cubes.mobile import MOBILE_CUBE\n"
@@ -1535,7 +1478,10 @@ def test_check_layer_violations_clean(monkeypatch: pytest.MonkeyPatch):
     assert issues == []
 
 
-def test_check_layer_violations_skips_unknown_package():
+def test_check_layer_violations_has_no_builtin_rules():
+    # No codebase-specific opinions ship by default: with LAYER_RULES empty
+    # the rule is inert for every package.
+    assert _cfg.LAYER_RULES == {}
     source = "from something import x\n"
     issues = check_layer_violations(_parse(source), Path("f.py"), "unknown-pkg")
     assert issues == []
@@ -1869,9 +1815,7 @@ def test_check_import_cycles_pkg_detects_cycle(tmp_path: Path):
         files.append((py_file, tree))
 
     original_packages = ds.PACKAGES
-    original_prefixes = ds.ALLOWED_IMPORT_PREFIXES.copy()
     ds.PACKAGES = {pkg_name: pkg_dir}
-    ds.ALLOWED_IMPORT_PREFIXES[pkg_name] = [f"{pkg_name}."]
     try:
         issues = check_import_cycles_pkg(pkg_name, files)
         assert len(issues) >= 1
@@ -1879,7 +1823,6 @@ def test_check_import_cycles_pkg_detects_cycle(tmp_path: Path):
         assert issues[0].severity == "error"
     finally:
         ds.PACKAGES = original_packages
-        ds.ALLOWED_IMPORT_PREFIXES.update(original_prefixes)
 
 
 def test_check_import_cycles_pkg_clean(tmp_path: Path):
@@ -1897,15 +1840,12 @@ def test_check_import_cycles_pkg_clean(tmp_path: Path):
         files.append((py_file, tree))
 
     original_packages = ds.PACKAGES
-    original_prefixes = ds.ALLOWED_IMPORT_PREFIXES.copy()
     ds.PACKAGES = {pkg_name: pkg_dir}
-    ds.ALLOWED_IMPORT_PREFIXES[pkg_name] = [f"{pkg_name}."]
     try:
         issues = check_import_cycles_pkg(pkg_name, files)
         assert issues == []
     finally:
         ds.PACKAGES = original_packages
-        ds.ALLOWED_IMPORT_PREFIXES.update(original_prefixes)
 
 
 # ── Cross-File: Module Coupling ─────────────────────────────────────────────
@@ -1938,9 +1878,7 @@ def test_check_module_coupling_pkg_flags_hub_module(tmp_path: Path):
     files = _files_for_pkg(pkg_dir)
 
     original_packages = ds.PACKAGES
-    original_prefixes = ds.ALLOWED_IMPORT_PREFIXES.copy()
     ds.PACKAGES = {pkg_name: pkg_dir}
-    ds.ALLOWED_IMPORT_PREFIXES[pkg_name] = [f"{pkg_name}."]
     try:
         issues = check_module_coupling_pkg(pkg_name, files)
         assert len(issues) == 1
@@ -1948,7 +1886,6 @@ def test_check_module_coupling_pkg_flags_hub_module(tmp_path: Path):
         assert f"{pkg_name}.hub" in issues[0].message
     finally:
         ds.PACKAGES = original_packages
-        ds.ALLOWED_IMPORT_PREFIXES.update(original_prefixes)
 
 
 def test_check_module_coupling_pkg_allows_high_fan_in_alone(tmp_path: Path):
@@ -1966,15 +1903,12 @@ def test_check_module_coupling_pkg_allows_high_fan_in_alone(tmp_path: Path):
     files = _files_for_pkg(pkg_dir)
 
     original_packages = ds.PACKAGES
-    original_prefixes = ds.ALLOWED_IMPORT_PREFIXES.copy()
     ds.PACKAGES = {pkg_name: pkg_dir}
-    ds.ALLOWED_IMPORT_PREFIXES[pkg_name] = [f"{pkg_name}."]
     try:
         issues = check_module_coupling_pkg(pkg_name, files)
         assert issues == []
     finally:
         ds.PACKAGES = original_packages
-        ds.ALLOWED_IMPORT_PREFIXES.update(original_prefixes)
 
 
 def test_check_module_coupling_pkg_clean(tmp_path: Path):
@@ -1988,15 +1922,12 @@ def test_check_module_coupling_pkg_clean(tmp_path: Path):
     files = _files_for_pkg(pkg_dir)
 
     original_packages = ds.PACKAGES
-    original_prefixes = ds.ALLOWED_IMPORT_PREFIXES.copy()
     ds.PACKAGES = {pkg_name: pkg_dir}
-    ds.ALLOWED_IMPORT_PREFIXES[pkg_name] = [f"{pkg_name}."]
     try:
         issues = check_module_coupling_pkg(pkg_name, files)
         assert issues == []
     finally:
         ds.PACKAGES = original_packages
-        ds.ALLOWED_IMPORT_PREFIXES.update(original_prefixes)
 
 
 # ── Cross-File: Duplicate Function Bodies ────────────────────────────────────
@@ -3021,3 +2952,79 @@ def test_plan_report_truncates_by_top():
     issues = [Issue(Path(f"file{i}.py"), 1, "info", f"rule-{i}", "msg", "pkg") for i in range(30)]
     report = plan_report(issues, top=5)
     assert "and 25 more rules" in report
+
+
+# ── JSON report: schema v1, locations, fingerprints ─────────────────────────
+
+
+def _run_cli_json(pkg_dir: Path) -> dict:
+    import json
+    import subprocess
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "spaghetti.detector",
+            "--package",
+            f"{pkg_dir.name}={pkg_dir}",
+            "--json",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=pkg_dir.parent,
+    )
+    assert proc.returncode in (0, 1, 2), proc.stderr
+    return json.loads(proc.stdout)
+
+
+def test_json_report_validates_against_committed_schema(tmp_path: Path):
+    import json
+
+    import jsonschema
+
+    pkg_dir = tmp_path / "pkg"
+    pkg_dir.mkdir()
+    (pkg_dir / "m.py").write_text(
+        "def f(a, b):  # spaghetti-ignore[missing-return-type]: demo\n"
+        "    try:\n        pass\n    except:\n        pass\n"
+    )
+    report = _run_cli_json(pkg_dir)
+    schema = json.loads((Path(__file__).parents[1] / "schema" / "report.v1.json").read_text())
+    jsonschema.Draft202012Validator(schema).validate(report)
+    assert report["schema_version"] == 1
+    assert report["packages"]["pkg"]["files"] == 1
+    assert report["summary"]["grade"] in "ABCDF"
+    assert report["ignored"][0]["reason"] == "demo"
+
+
+def test_issue_locations_are_one_based_character_columns(tmp_path: Path):
+    pkg_dir = tmp_path / "pkg"
+    pkg_dir.mkdir()
+    # Non-ASCII before the flagged node: a byte column would be off by two.
+    (pkg_dir / "m.py").write_text("é = 1\ndef f(x):\n    return x\n", encoding="utf-8")
+    result = ds.scan_package(
+        "pkg", pkg_dir, config=ScanConfig(exclude=[], min_duplicate_lines=5, twin_similarity=0.6)
+    )
+    by_rule = {i.rule: i for i in result.issues}
+    issue = by_rule["missing-return-type"]
+    assert (issue.line, issue.column) == (2, 1)
+    assert (issue.end_line, issue.end_column) == (3, 13)
+
+
+def test_fingerprints_are_stable_across_line_shifts_and_distinct_per_occurrence(
+    tmp_path: Path,
+):
+    cfg = ScanConfig(exclude=[], min_duplicate_lines=5, twin_similarity=0.6)
+    pkg_dir = tmp_path / "pkg"
+    pkg_dir.mkdir()
+    body = "def f(x):\n    return x\n\ndef g(x):\n    return x\n"
+    (pkg_dir / "m.py").write_text(body)
+    first = {i.message: i.fingerprint for i in ds.scan_package("pkg", pkg_dir, config=cfg).issues}
+
+    (pkg_dir / "m.py").write_text("# shifted down\n\n" + body)
+    second = {i.message: i.fingerprint for i in ds.scan_package("pkg", pkg_dir, config=cfg).issues}
+
+    assert first == second
+    assert len(set(first.values())) == len(first)
+    assert all(len(fp) == 16 for fp in first.values())

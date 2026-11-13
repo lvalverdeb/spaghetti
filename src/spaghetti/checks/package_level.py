@@ -11,6 +11,7 @@ from spaghetti.ast_helpers import (
     _dump_stmts,
     _is_trivial_body,
     _line_count,
+    _loc,
     _walk_with_class_context,
 )
 from spaghetti.config import MAX_MODULE_FAN_IN, MAX_MODULE_FAN_OUT, MIN_TWIN_FUNCTION_LINES
@@ -57,11 +58,17 @@ def _import_targets(package: str, node: ast.ImportFrom) -> list[str]:
 
 
 def _package_prefix(pkg_name: str) -> str:
-    # Late import so tests can monkeypatch detector.ALLOWED_IMPORT_PREFIXES
+    """Dotted prefix of the package's own modules, e.g. ``"my_lib."``.
+
+    Derived from the registered package directory's name, which is also how
+    ``_module_and_package_for`` names modules — so an import is intra-package
+    exactly when it starts with this.
+    """
+    # Late import so tests can monkeypatch detector.PACKAGES
     import spaghetti.detector as _det
 
-    prefixes = _det.ALLOWED_IMPORT_PREFIXES.get(pkg_name, [])
-    return prefixes[0] if prefixes else ""
+    pkg_root = _det.PACKAGES.get(pkg_name)
+    return f"{pkg_root.name}." if pkg_root is not None else ""
 
 
 def _is_type_checking_guard(node: ast.If) -> bool:
@@ -262,6 +269,7 @@ def check_duplicate_functions_pkg(
             Issue(
                 file=first_fp,
                 line=first_node.lineno,
+                **_loc(first_node),
                 severity="warning",
                 rule="duplicate-function-body",
                 package=pkg_name,
@@ -397,6 +405,7 @@ def check_orphan_interfaces_pkg(pkg_name: str, files: list[tuple[Path, ast.Modul
                 Issue(
                     file=filepath,
                     line=node.lineno,
+                    **_loc(node),
                     severity="info",
                     rule="orphan-interface",
                     package=pkg_name,

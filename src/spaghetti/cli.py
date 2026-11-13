@@ -247,14 +247,15 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main() -> int:
-    parser = _build_arg_parser()
-    args = parser.parse_args()
-
+def _resolve_registry(
+    args: argparse.Namespace, parser: argparse.ArgumentParser
+) -> tuple[list[str], frozenset[str]]:
+    """Populate ``detector.PACKAGES`` from the CLI flags (or cwd discovery),
+    validate the requested package names and paths, and return the effective
+    exclude list plus the names to scan non-recursively."""
     # Late import to avoid circular dependency (cli → scanner → detector → cli)
     # Set PACKAGES on detector module (the canonical place tests monkeypatch)
     import spaghetti.detector as _det
-    from spaghetti.scanner import review_packages_concurrently
 
     # A bare invocation (no --config, no --package) must never silently fall
     # back to a hardcoded workspace-specific registry — instead it
@@ -300,7 +301,39 @@ def main() -> int:
         parser.error(
             "package path(s) do not exist: " + ", ".join(f"{p}={_det.PACKAGES[p]}" for p in missing)
         )
+    return run_exclude, non_recursive
 
+
+def _emit_report(
+    args: argparse.Namespace,
+    filtered: list[Issue],
+    total_result: ScanResult,
+    per_package: dict[str, ScanResult],
+) -> None:
+    if args.plan:
+        print(plan_report(filtered, top=args.top))
+    elif args.json:
+        import json
+
+        print(json.dumps(_json_report(filtered, total_result, per_package), indent=_JSON_INDENT))
+    else:
+        _render_text_report(filtered, total_result, per_package, args)
+
+
+def _exit_code(total_result: ScanResult) -> int:
+    if total_result.error_count > 0:
+        return _EXIT_ERROR
+    if total_result.warning_count > 0:
+        return _EXIT_WARNING
+    return _EXIT_CLEAN
+
+
+def main() -> int:
+    parser = _build_arg_parser()
+    args = parser.parse_args()
+    from spaghetti.scanner import review_packages_concurrently
+
+    run_exclude, non_recursive = _resolve_registry(args, parser)
     min_severity = _SEVERITY_ORDER[args.severity]
 
     per_package: dict[str, ScanResult] = asyncio.run(
@@ -317,60 +350,63 @@ def main() -> int:
 
     total_result = ScanResult()
     for pkg_name in args.packages:
-        result = per_package[pkg_name]
-        total_result.issues.extend(result.issues)
-        total_result.files_scanned += result.files_scanned
-        total_result.functions_scanned += result.functions_scanned
-        total_result.total_lines += result.total_lines
-        total_result.suppressed += result.suppressed
-        total_result.ignored.extend(result.ignored)
+        total_result.extend(per_package[pkg_name])
 
     filtered = [i for i in total_result.issues if _SEVERITY_ORDER[i.severity] >= min_severity]
+    _emit_report(args, filtered, total_result, per_package)
+    return _exit_code(total_result)
 
-    if args.plan:
-        print(plan_report(filtered, top=args.top))
-    elif args.json:
-        import json
 
-        output = {
-            "issues": [
-                {
-                    "file": _display_path(i.file),
-                    "line": i.line,
-                    "severity": i.severity,
-                    "rule": i.rule,
-                    "message": i.message,
-                    "package": i.package,
-                }
-                for i in filtered
-            ],
-            "suppressed": total_result.suppressed,
-            "suppression_help": (
-                "Silence a confirmed non-issue by adding "
-                "'# spaghetti-ignore[rule-name]: reason' on the flagged line (or the line above)."
-            ),
-            "ignored": [
-                {
-                    "file": _display_path(i.file),
-                    "line": i.line,
-                    "severity": i.severity,
-                    "rule": i.rule,
-                    "message": i.message,
-                    "package": i.package,
-                    "reason": i.reason,
-                }
-                for i in total_result.ignored
-            ],
-        }
-        print(json.dumps(output, indent=_JSON_INDENT))
-    else:
-        _render_text_report(filtered, total_result, per_package, args)
+JSON_SCHEMA_VERSION = 1
+"""Bumped only on a breaking change to the ``--json`` shape; additive fields keep it.
+The matching schema is committed at ``schema/report.v1.json``."""
 
-    if total_result.error_count > 0:
-        return _EXIT_ERROR
-    if total_result.warning_count > 0:
-        return _EXIT_WARNING
-    return _EXIT_CLEAN
+
+def _issue_json(i: Issue) -> dict[str, object]:
+    return {
+        "file": _display_path(i.file),
+        "line": i.line,
+        "column": i.column,
+        "end_line": i.end_line,
+        "end_column": i.end_column,
+        "severity": i.severity,
+        "rule": i.rule,
+        "message": i.message,
+        "package": i.package,
+        "fingerprint": i.fingerprint,
+    }
+
+
+def _package_json(result: ScanResult) -> dict[str, object]:
+    score, grade = compute_score(result)
+    return {
+        "grade": grade,
+        "score": round(score, 1),
+        "files": result.files_scanned,
+        "lines": result.total_lines,
+        "functions": result.functions_scanned,
+        "issues": len(result.issues),
+        "errors": result.error_count,
+        "warnings": result.warning_count,
+        "infos": result.info_count,
+    }
+
+
+def _json_report(
+    filtered: list[Issue], total_result: ScanResult, per_package: dict[str, ScanResult]
+) -> dict[str, object]:
+    return {
+        "schema_version": JSON_SCHEMA_VERSION,
+        "summary": _package_json(total_result),
+        "packages": {name: _package_json(r) for name, r in per_package.items()},
+        "issues": [_issue_json(i) for i in filtered],
+        "suppressed": total_result.suppressed,
+        "suppression_help": (
+            "Silence a confirmed non-issue by adding "
+            "'# spaghetti-ignore[rule-name]: reason' on the flagged line (or the line above)."
+        ),
+        "ignored": [{**_issue_json(i), "reason": i.reason} for i in total_result.ignored],
+    }
 
 
 def _file_sort_key(item: tuple[str, list[Issue]]) -> tuple[int, int, str]:

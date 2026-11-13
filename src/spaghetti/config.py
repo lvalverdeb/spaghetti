@@ -16,8 +16,8 @@ def _find_workspace_root(start: Path) -> Path | None:
 
     Returns ``None`` rather than raising when no such ancestor exists —
     spaghetti is pip-installable and importable standalone (e.g. in this
-    package's own standalone CI checkout, which has no sibling ``boti``/etc.
-    directories and no ambient workspace at all), and a bare import must not
+    package's own standalone CI checkout, which has no ambient workspace at
+    all), and a bare import must not
     crash. Callers fall back to an empty default package registry in that
     case; the CLI already requires an explicit ``--config``/``--package`` or
     errors out when the resolved registry is empty.
@@ -108,22 +108,11 @@ BANNER_WIDTH = 72
 
 # ── Layer rules ───────────────────────────────────────────────────────────────
 
-LAYER_RULES: dict[str, dict[str, list[str]]] = {
-    "etl-demo": {
-        "routes/": ["boti_data.", "boti.", "boti_dask."],
-    },
-    "etl-core": {
-        "": ["fastapi", "starlette", "httpx"],
-    },
-}
-
-ALLOWED_IMPORT_PREFIXES: dict[str, list[str]] = {
-    "etl-core": ["etl_core."],
-    "etl-demo": ["etl_demo."],
-    "boti-data": ["boti_data."],
-    "boti-dask": ["boti_dask."],
-    "boti": ["boti."],
-}
+# ``{package-name: {path-prefix-within-package: [forbidden import prefixes]}}``.
+# Empty by default: there are no built-in architectural opinions about any
+# particular codebase. Populated from user configuration (see ROADMAP Phase 1);
+# until then ``layer-violation`` is inert unless a caller fills this in.
+LAYER_RULES: dict[str, dict[str, list[str]]] = {}
 
 # ── Compiled regexes ──────────────────────────────────────────────────────────
 

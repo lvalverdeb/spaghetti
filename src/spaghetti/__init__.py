@@ -1,4 +1,4 @@
-"""Spaghetti-code and architectural-smell detector for the Boti workspace.
+"""Spaghetti-code and architectural-smell detector for Python projects.
 
 See :mod:`spaghetti.detector` for the scanning implementation; individual
 check functions (``check_long_functions``, ``check_circular_imports``, etc.)

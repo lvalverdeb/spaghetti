@@ -130,18 +130,31 @@ The marker applies to the line it appears on and the line directly above it (so 
 
 ## JSON Output
 
-With `--json`, the report is a single JSON object to stdout:
+With `--json`, the report is a single JSON object to stdout. Its shape is frozen as
+**schema version 1** and validated in CI against [`schema/report.v1.json`](schema/report.v1.json);
+fields may be added without a version bump, never removed or retyped.
 
 ```json
 {
+  "schema_version": 1,
+  "summary": { "grade": "B", "score": 82.5, "files": 32, "lines": 6000, "functions": 410,
+               "issues": 17, "errors": 2, "warnings": 11, "infos": 4 },
+  "packages": {
+    "my-lib": { "grade": "A", "score": 92.1, "files": 14, "lines": 2800, "functions": 190,
+                "issues": 5, "errors": 0, "warnings": 3, "infos": 2 }
+  },
   "issues": [
     {
       "file": "src/my_module.py",
       "line": 42,
+      "column": 1,
+      "end_line": 106,
+      "end_column": 17,
       "severity": "warning",
       "rule": "long-function",
       "message": "my_func() is 65 lines (max 50)",
-      "package": "my-lib"
+      "package": "my-lib",
+      "fingerprint": "7ef53d04ad35db1d"
     }
   ],
   "suppressed": 3,
@@ -150,17 +163,28 @@ With `--json`, the report is a single JSON object to stdout:
     {
       "file": "src/legacy.py",
       "line": 10,
+      "column": 5,
+      "end_line": 10,
+      "end_column": 12,
       "severity": "warning",
       "rule": "bare-except",
       "message": "Bare except: clause",
       "package": "my-lib",
+      "fingerprint": "0d77fdfa750f165d",
       "reason": "reviewed, no issue"
     }
   ]
 }
 ```
 
-`ignored` lists the findings a `# spaghetti-ignore` marker actually silenced (each with its `reason`, if one was given), so a suppression is visible rather than invisible in the JSON report too.
+- `column` / `end_column` are 1-based character columns (`end_column` exclusive); they are
+  `null` for rules without a precise location (e.g. `long-file`, `import-cycle`).
+- `fingerprint` identifies a finding stably across line shifts and re-runs: a hash of the
+  rule, the package-relative path, and the message with digits stripped. It is the key a
+  baseline file will use.
+- `ignored` lists the findings a `# spaghetti-ignore` marker actually silenced (each with its
+  `reason`, if one was given), so a suppression is visible rather than invisible in the JSON
+  report too.
 
 ## Remediation Plan
 
@@ -228,6 +252,14 @@ Repeatable; paths resolve relative to the current directory. Combine with `--con
 
 ## Development
 
+Requires Python 3.11 or newer. The only runtime dependency is PyYAML.
+
 ```bash
-uv run pytest spaghetti/tests/
+uv sync --group dev
+uv run pytest                       # unit tests
+uv run ruff check src tests scripts
+uv run python scripts/dogfood_gate.py   # spaghetti on itself: no errors, grade B or better
 ```
+
+CI runs the suite on Python 3.11, 3.12 and 3.13, plus the dogfood gate. See
+[ROADMAP.md](ROADMAP.md) for where the project is headed.

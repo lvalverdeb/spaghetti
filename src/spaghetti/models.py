@@ -29,6 +29,13 @@ class Issue:
     rule: str
     message: str
     package: str = ""
+    column: int | None = None
+    """1-based character column of the finding's start, when the rule knows it."""
+    end_line: int | None = None
+    end_column: int | None = None
+    """1-based character column just past the finding's end (exclusive)."""
+    fingerprint: str = ""
+    """Stable identity across line shifts and re-runs — see ``detector._assign_fingerprints``."""
     reason: str | None = None
     """Human-supplied justification from a ``# spaghetti-ignore: ...`` marker.
 
@@ -70,6 +77,15 @@ class ScanResult:
     waived — each entry's ``reason`` is the text after the marker's ``:``,
     or ``None`` if the marker didn't give one.
     """
+
+    def extend(self, other: ScanResult) -> None:
+        """Fold ``other`` into this result (the all-packages total)."""
+        self.issues.extend(other.issues)
+        self.files_scanned += other.files_scanned
+        self.functions_scanned += other.functions_scanned
+        self.total_lines += other.total_lines
+        self.suppressed += other.suppressed
+        self.ignored.extend(other.ignored)
 
     @property
     def error_count(self) -> int:

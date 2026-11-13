@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.13"]
+        python-version: ["3.11", "3.12", "3.13"]
 
     steps:
       - uses: actions/checkout@v4
@@ -31,6 +31,24 @@ jobs:
 
       - name: Run tests
         run: uv run pytest tests/ -q
+
+  dogfood:
+    name: Dogfood gate (spaghetti on itself)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --locked --group dev
+
+      - name: Self-scan must stay error-free and graded B or better
+        run: uv run python scripts/dogfood_gate.py
 
   lint:
     name: Lint

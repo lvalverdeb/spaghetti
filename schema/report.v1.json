@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/lvalverdeb/spaghetti/schema/report.v1.json",
+  "title": "spaghetti JSON report, schema version 1",
+  "description": "Output of `spaghetti --json`. Additive fields may appear in later releases without a schema_version bump; removals or type changes bump it.",
+  "type": "object",
+  "required": ["schema_version", "summary", "packages", "issues", "suppressed", "suppression_help", "ignored"],
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": { "const": 1 },
+    "summary": { "$ref": "#/$defs/packageStats" },
+    "packages": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/packageStats" }
+    },
+    "issues": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/issue" }
+    },
+    "suppressed": { "type": "integer", "minimum": 0 },
+    "suppression_help": { "type": "string" },
+    "ignored": {
+      "type": "array",
+      "items": {
+        "allOf": [
+          { "$ref": "#/$defs/issue" },
+          {
+            "type": "object",
+            "required": ["reason"],
+            "properties": { "reason": { "type": ["string", "null"] } }
+          }
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "severity": { "enum": ["info", "warning", "error"] },
+    "packageStats": {
+      "type": "object",
+      "required": ["grade", "score", "files", "lines", "functions", "issues", "errors", "warnings", "infos"],
+      "properties": {
+        "grade": { "enum": ["A", "B", "C", "D", "F"] },
+        "score": { "type": "number", "minimum": 0, "maximum": 100 },
+        "files": { "type": "integer", "minimum": 0 },
+        "lines": { "type": "integer", "minimum": 0 },
+        "functions": { "type": "integer", "minimum": 0 },
+        "issues": { "type": "integer", "minimum": 0 },
+        "errors": { "type": "integer", "minimum": 0 },
+        "warnings": { "type": "integer", "minimum": 0 },
+        "infos": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "issue": {
+      "type": "object",
+      "required": ["file", "line", "column", "end_line", "end_column", "severity", "rule", "message", "package", "fingerprint"],
+      "properties": {
+        "file": { "type": "string", "description": "Workspace-relative when a uv workspace root is found, absolute otherwise." },
+        "line": { "type": "integer", "minimum": 1 },
+        "column": { "type": ["integer", "null"], "minimum": 1, "description": "1-based character column of the start, null when the rule has no precise location." },
+        "end_line": { "type": ["integer", "null"], "minimum": 1 },
+        "end_column": { "type": ["integer", "null"], "minimum": 1, "description": "1-based, exclusive." },
+        "severity": { "$ref": "#/$defs/severity" },
+        "rule": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+        "message": { "type": "string" },
+        "package": { "type": "string" },
+        "fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{16}$",
+          "description": "sha1(rule, package-relative path, message with digits stripped, occurrence index)[:16]. Stable across line shifts."
+        }
+      }
+    }
+  }
+}

@@ -7,6 +7,7 @@ from collections import defaultdict
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
+import spaghetti.config as _cfg
 from spaghetti.ast_helpers import (
     _count_nested_returns,
     _cyclomatic_complexity,
@@ -16,13 +17,13 @@ from spaghetti.ast_helpers import (
     _is_test_file,
     _is_test_function,
     _line_count,
+    _loc,
     _nesting_depth,
     _param_has_type_hint,
 )
 from spaghetti.config import (
     COMPLEXITY_THRESHOLD,
     ERROR_ESCALATION_MULTIPLIER,
-    LAYER_RULES,
     LONG_FUNCTION_FLAT_NESTING_MAX,
     MAX_CLASS_ATTRS,
     MAX_CLASS_LCOM4,
@@ -42,7 +43,7 @@ from spaghetti.config import (
     MIN_STATEFUL_METHOD_FRACTION,
 )
 from spaghetti.config import DUNDER_RE as _DUNDER_RE
-from spaghetti.models import Issue
+from spaghetti.models import Issue, Severity
 
 __all__ = ["ALL_CHECKS"]
 
@@ -63,6 +64,7 @@ def check_long_functions(tree: ast.Module, filepath: Path, pkg: str) -> list[Iss
                     Issue(
                         file=filepath,
                         line=node.lineno,
+                        **_loc(node),
                         severity="warning",
                         rule="long-function",
                         package=pkg,
@@ -89,6 +91,7 @@ def check_complexity(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
                     Issue(
                         file=filepath,
                         line=node.lineno,
+                        **_loc(node),
                         severity=(
                             "error"
                             if cc > COMPLEXITY_THRESHOLD * ERROR_ESCALATION_MULTIPLIER
@@ -116,6 +119,7 @@ def check_missing_types(tree: ast.Module, filepath: Path, pkg: str) -> list[Issu
                     Issue(
                         file=filepath,
                         line=node.lineno,
+                        **_loc(node),
                         severity="warning",
                         rule="missing-return-type",
                         package=pkg,
@@ -131,6 +135,7 @@ def check_missing_types(tree: ast.Module, filepath: Path, pkg: str) -> list[Issu
                         Issue(
                             file=filepath,
                             line=node.lineno,
+                            **_loc(node),
                             severity="info",
                             rule="missing-param-type",
                             package=pkg,
@@ -157,6 +162,7 @@ def check_excessive_params(tree: ast.Module, filepath: Path, pkg: str) -> list[I
                     Issue(
                         file=filepath,
                         line=node.lineno,
+                        **_loc(node),
                         severity="warning",
                         rule="too-many-params",
                         package=pkg,
@@ -184,6 +190,7 @@ def check_excessive_returns(tree: ast.Module, filepath: Path, pkg: str) -> list[
                     Issue(
                         file=filepath,
                         line=node.lineno,
+                        **_loc(node),
                         severity="info",
                         rule="excessive-returns",
                         package=pkg,
@@ -227,6 +234,7 @@ def check_boolean_flag_params(tree: ast.Module, filepath: Path, pkg: str) -> lis
                     Issue(
                         file=filepath,
                         line=node.lineno,
+                        **_loc(node),
                         severity="info",
                         rule="boolean-flag-params",
                         package=pkg,
@@ -254,6 +262,7 @@ def check_deep_nesting(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue
                     Issue(
                         file=filepath,
                         line=node.lineno,
+                        **_loc(node),
                         severity="warning",
                         rule="deep-nesting",
                         package=pkg,
@@ -270,62 +279,58 @@ def check_deep_nesting(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue
 # ── Rule: Untyped Dict Usage ──────────────────────────────────────────────────
 
 
+def _bare_dict_names(annotation: ast.AST) -> list[ast.Name]:
+    """Every ``dict`` name in ``annotation`` that is not the head of a
+    ``dict[...]`` subscript (whose parameters are themselves inspected)."""
+    found: list[ast.Name] = []
+
+    def visit(n: ast.AST) -> None:
+        if isinstance(n, ast.Subscript) and isinstance(n.value, ast.Name) and n.value.id == "dict":
+            visit(n.slice)
+            return
+        if isinstance(n, ast.Name) and n.id == "dict":
+            found.append(n)
+        for child in ast.iter_child_nodes(n):
+            visit(child)
+
+    visit(annotation)
+    return found
+
+
+def _annotation_of(node: ast.AST) -> ast.AST | None:
+    """The type expression a node carries, for the node kinds that carry one."""
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return node.returns
+    if isinstance(node, (ast.arg, ast.AnnAssign)):
+        return node.annotation
+    if isinstance(node, getattr(ast, "TypeAlias", type(None))):
+        return node.value
+    return None
+
+
 def check_untyped_dicts(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
     """Find bare `dict` without type parameters in annotations via AST inspection."""
     issues: list[Issue] = []
-
-    def get_bare_dict_lines(annotation_node: ast.AST | None) -> list[int]:
-        if not annotation_node:
-            return []
-
-        lines: list[int] = []
-
-        def visit(n: ast.AST) -> None:
-            if isinstance(n, ast.Subscript):
-                if isinstance(n.value, ast.Name) and n.value.id == "dict":
-                    visit(n.slice)
-                    return
-            elif isinstance(n, ast.Name) and n.id == "dict":
-                lines.append(n.lineno)
-
-            for child in ast.iter_child_nodes(n):
-                visit(child)
-
-        visit(annotation_node)
-        return lines
-
     for node in ast.walk(tree):
-        annotations_to_check: list[ast.AST] = []
-
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            if node.returns:
-                annotations_to_check.append(node.returns)
-        elif isinstance(node, ast.arg):
-            if node.annotation:
-                annotations_to_check.append(node.annotation)
-        elif isinstance(node, ast.AnnAssign):
-            if node.annotation:
-                annotations_to_check.append(node.annotation)
-        elif isinstance(node, getattr(ast, "TypeAlias", type(None))):
-            if hasattr(node, "value"):
-                annotations_to_check.append(node.value)
-
-        for ann in annotations_to_check:
-            for line in get_bare_dict_lines(ann):
-                issues.append(
-                    Issue(
-                        file=filepath,
-                        line=line,
-                        severity="info",
-                        rule="untyped-dict",
-                        package=pkg,
-                        message=(
-                            "Bare 'dict' used in type hint — use dict[str, Any] or similar, "
-                            "a dataclass/Pydantic model (a DTO) if the shape is fixed, or "
-                            "typing.TypedDict if it must stay a plain dict at runtime"
-                        ),
-                    )
+        annotation = _annotation_of(node)
+        if annotation is None:
+            continue
+        for name in _bare_dict_names(annotation):
+            issues.append(
+                Issue(
+                    file=filepath,
+                    line=name.lineno,
+                    **_loc(name),
+                    severity="info",
+                    rule="untyped-dict",
+                    package=pkg,
+                    message=(
+                        "Bare 'dict' used in type hint — use dict[str, Any] or similar, "
+                        "a dataclass/Pydantic model (a DTO) if the shape is fixed, or "
+                        "typing.TypedDict if it must stay a plain dict at runtime"
+                    ),
                 )
+            )
 
     unique_issues = {(i.line, i.rule): i for i in issues}
     return list(unique_issues.values())
@@ -430,6 +435,7 @@ def check_swallowed_exceptions(tree: ast.Module, filepath: Path, pkg: str) -> li
                 Issue(
                     file=filepath,
                     line=node.lineno,
+                    **_loc(node),
                     severity="warning",
                     rule="swallowed-exception",
                     package=pkg,
@@ -458,6 +464,7 @@ def check_duplicate_branches(tree: ast.Module, filepath: Path, pkg: str) -> list
                 Issue(
                     file=filepath,
                     line=node.lineno,
+                    **_loc(node),
                     severity="warning",
                     rule="duplicate-branch",
                     package=pkg,
@@ -585,6 +592,7 @@ def check_encapsulation_violations(tree: ast.Module, filepath: Path, pkg: str) -
                 Issue(
                     file=filepath,
                     line=node.lineno,
+                    **_loc(node),
                     severity="info",
                     rule="encapsulation-violation",
                     package=pkg,
@@ -600,6 +608,7 @@ def check_encapsulation_violations(tree: ast.Module, filepath: Path, pkg: str) -
                 Issue(
                     file=filepath,
                     line=node.lineno,
+                    **_loc(node),
                     severity="info",
                     rule="encapsulation-violation",
                     package=pkg,
@@ -612,6 +621,30 @@ def check_encapsulation_violations(tree: ast.Module, filepath: Path, pkg: str) -
 # ── Rule: God Class ───────────────────────────────────────────────────────────
 
 
+def _self_attrs_assigned(methods: list[ast.FunctionDef | ast.AsyncFunctionDef]) -> set[str]:
+    """Every ``self.<attr> = ...`` target across ``methods``."""
+    return {
+        sub.attr
+        for method in methods
+        for sub in ast.walk(method)
+        if isinstance(sub, ast.Attribute)
+        and isinstance(sub.ctx, ast.Store)
+        and isinstance(sub.value, ast.Name)
+        and sub.value.id == "self"
+    }
+
+
+def _god_class_severity(n_methods: int, n_attrs: int, wmc: int) -> Severity | None:
+    """``None`` under every threshold; ``"error"`` once any metric passes the
+    escalation multiple of its threshold; ``"warning"`` in between."""
+    metrics = ((n_methods, MAX_CLASS_METHODS), (n_attrs, MAX_CLASS_ATTRS), (wmc, MAX_CLASS_WMC))
+    if any(value > limit * ERROR_ESCALATION_MULTIPLIER for value, limit in metrics):
+        return "error"
+    if any(value > limit for value, limit in metrics):
+        return "warning"
+    return None
+
+
 def check_god_class(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
     """A class with too many methods or instance attributes, or too much total
     complexity across its methods (WMC — Weighted Methods per Class) even if
@@ -621,29 +654,15 @@ def check_god_class(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
         if not isinstance(node, ast.ClassDef):
             continue
         methods = [n for n in node.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
-        attrs: set[str] = set()
-        for method in methods:
-            for sub in ast.walk(method):
-                if (
-                    isinstance(sub, ast.Attribute)
-                    and isinstance(sub.ctx, ast.Store)
-                    and isinstance(sub.value, ast.Name)
-                    and sub.value.id == "self"
-                ):
-                    attrs.add(sub.attr)
+        attrs = _self_attrs_assigned(methods)
         wmc = sum(_cyclomatic_complexity(method) for method in methods)
-        if len(methods) > MAX_CLASS_METHODS or len(attrs) > MAX_CLASS_ATTRS or wmc > MAX_CLASS_WMC:
-            severity = (
-                "error"
-                if len(methods) > MAX_CLASS_METHODS * ERROR_ESCALATION_MULTIPLIER
-                or len(attrs) > MAX_CLASS_ATTRS * ERROR_ESCALATION_MULTIPLIER
-                or wmc > MAX_CLASS_WMC * ERROR_ESCALATION_MULTIPLIER
-                else "warning"
-            )
+        severity = _god_class_severity(len(methods), len(attrs), wmc)
+        if severity is not None:
             issues.append(
                 Issue(
                     file=filepath,
                     line=node.lineno,
+                    **_loc(node),
                     severity=severity,
                     rule="god-class",
                     package=pkg,
@@ -840,6 +859,7 @@ def check_low_cohesion(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue
                 Issue(
                     file=filepath,
                     line=node.lineno,
+                    **_loc(node),
                     severity="warning",
                     rule="low-cohesion",
                     package=pkg,
@@ -861,7 +881,7 @@ def check_layer_violations(tree: ast.Module, filepath: Path, pkg: str) -> list[I
     # Late import so tests can monkeypatch detector.PACKAGES
     import spaghetti.detector as _det
 
-    rules = LAYER_RULES.get(pkg, {})
+    rules = _cfg.LAYER_RULES.get(pkg, {})
     if not rules:
         return []
     pkg_root = _det.PACKAGES.get(pkg)
@@ -890,6 +910,7 @@ def check_layer_violations(tree: ast.Module, filepath: Path, pkg: str) -> list[I
                             Issue(
                                 file=filepath,
                                 line=node.lineno,
+                                **_loc(node),
                                 severity="error",
                                 rule="layer-violation",
                                 package=pkg,
@@ -925,6 +946,7 @@ def check_transport_in_library(tree: ast.Module, filepath: Path, pkg: str) -> li
                     Issue(
                         file=filepath,
                         line=node.lineno,
+                        **_loc(node),
                         severity="error",
                         rule="transport-in-library",
                         package=pkg,
@@ -964,6 +986,7 @@ def check_circular_imports(tree: ast.Module, filepath: Path, pkg: str) -> list[I
                     Issue(
                         file=filepath,
                         line=node.lineno,
+                        **_loc(node),
                         severity="warning",
                         rule="potential-circular-import",
                         package=pkg,
@@ -995,6 +1018,7 @@ def check_mutable_defaults(tree: ast.Module, filepath: Path, pkg: str) -> list[I
                         Issue(
                             file=filepath,
                             line=node.lineno,
+                            **_loc(node),
                             severity="warning",
                             rule="mutable-default",
                             package=pkg,
@@ -1016,6 +1040,7 @@ def check_bare_except(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]
                 Issue(
                     file=filepath,
                     line=node.lineno,
+                    **_loc(node),
                     severity="warning",
                     rule="bare-except",
                     package=pkg,
@@ -1039,6 +1064,7 @@ def check_star_imports(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue
                         Issue(
                             file=filepath,
                             line=node.lineno,
+                            **_loc(node),
                             severity="warning",
                             rule="star-import",
                             package=pkg,
@@ -1065,6 +1091,7 @@ def check_global_mutations(tree: ast.Module, filepath: Path, pkg: str) -> list[I
                             Issue(
                                 file=filepath,
                                 line=node.lineno,
+                                **_loc(node),
                                 severity="info",
                                 rule="global-mutable",
                                 package=pkg,
@@ -1121,6 +1148,35 @@ def _is_lazy_singleton_init(func_node: ast.AST, target_name: str, mutation: ast.
     )
 
 
+def _outer_scope_declarations(
+    func_node: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> dict[str, set[str]]:
+    """Every outer-scope name ``func_node`` declares, mapped to which
+    keyword(s) declared it — computed once so the mutation scan doesn't
+    re-walk the scope per candidate to answer "global, nonlocal, or both?"."""
+    declared_by: dict[str, set[str]] = defaultdict(set)
+    for child in _walk_own_scope(func_node):
+        if isinstance(child, (ast.Global, ast.Nonlocal)):
+            keyword = "global" if isinstance(child, ast.Global) else "nonlocal"
+            for name in child.names:
+                declared_by[name].add(keyword)
+    return declared_by
+
+
+def _assigned_outer_name(stmt: ast.AST, declared_by: dict[str, set[str]]) -> str | None:
+    """The declared outer-scope name ``stmt`` assigns to, if any."""
+    if isinstance(stmt, ast.Assign):
+        targets: list[ast.expr] = stmt.targets
+    elif isinstance(stmt, ast.AugAssign):
+        targets = [stmt.target]
+    else:
+        return None
+    for t in targets:
+        if isinstance(t, ast.Name) and t.id in declared_by:
+            return t.id
+    return None
+
+
 def check_scope_mutations(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
     """Detect functions that explicitly mutate outer-scope variables via
     ``global`` or ``nonlocal`` declarations followed by assignments."""
@@ -1130,37 +1186,13 @@ def check_scope_mutations(tree: ast.Module, filepath: Path, pkg: str) -> list[Is
         if not isinstance(func_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
 
-        # Every outer-scope name this function declares, mapped to which
-        # keyword(s) declared it — computed once so the mutation scan below
-        # doesn't need to re-walk the scope per candidate to answer
-        # "global, nonlocal, or both?".
-        declared_by: dict[str, set[str]] = defaultdict(set)
-        for child in _walk_own_scope(func_node):
-            if isinstance(child, ast.Global):
-                for name in child.names:
-                    declared_by[name].add("global")
-            elif isinstance(child, ast.Nonlocal):
-                for name in child.names:
-                    declared_by[name].add("nonlocal")
-
+        declared_by = _outer_scope_declarations(func_node)
         if not declared_by:
             continue
 
         for child in _walk_own_scope(func_node):
-            target_name: str | None = None
-            if isinstance(child, ast.Assign):
-                for t in child.targets:
-                    if isinstance(t, ast.Name) and t.id in declared_by:
-                        target_name = t.id
-                        break
-            elif isinstance(child, ast.AugAssign) and isinstance(child.target, ast.Name):
-                if child.target.id in declared_by:
-                    target_name = child.target.id
-
-            if target_name is None:
-                continue
-
-            if _is_lazy_singleton_init(func_node, target_name, child):
+            target_name = _assigned_outer_name(child, declared_by)
+            if target_name is None or _is_lazy_singleton_init(func_node, target_name, child):
                 continue
 
             keyword_str = "/".join(sorted(declared_by[target_name]))
@@ -1169,6 +1201,7 @@ def check_scope_mutations(tree: ast.Module, filepath: Path, pkg: str) -> list[Is
                 Issue(
                     file=filepath,
                     line=child.lineno,
+                    **_loc(child),
                     severity="info",
                     rule="scope-mutation",
                     package=pkg,
@@ -1284,6 +1317,7 @@ def check_message_chains(tree: ast.Module, filepath: Path, pkg: str) -> list[Iss
                         Issue(
                             file=filepath,
                             line=child.lineno,
+                            **_loc(child),
                             severity="info",
                             rule="message-chain",
                             package=pkg,
@@ -1310,6 +1344,7 @@ def check_excessive_decorators(tree: ast.Module, filepath: Path, pkg: str) -> li
                     Issue(
                         file=filepath,
                         line=node.lineno,
+                        **_loc(node),
                         severity="info",
                         rule="excessive-decorators",
                         package=pkg,
@@ -1399,6 +1434,7 @@ def check_magic_numbers(tree: ast.Module, source: str, filepath: Path, pkg: str)
         Issue(
             file=filepath,
             line=child.lineno,
+            **_loc(child),
             severity="info",
             rule="magic-number",
             package=pkg,
@@ -1617,6 +1653,7 @@ def check_missing_else(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue
             Issue(
                 file=filepath,
                 line=node.lineno,
+                **_loc(node),
                 severity="info",
                 rule="missing-else",
                 package=pkg,
@@ -1752,6 +1789,7 @@ def check_lazy_class(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
                 Issue(
                     file=filepath,
                     line=node.lineno,
+                    **_loc(node),
                     severity="info",
                     rule="lazy-class",
                     package=pkg,
@@ -1804,6 +1842,7 @@ def check_deep_inheritance(tree: ast.Module, filepath: Path, pkg: str) -> list[I
                 Issue(
                     file=filepath,
                     line=node.lineno,
+                    **_loc(node),
                     severity="warning",
                     rule="deep-inheritance",
                     package=pkg,
@@ -1945,6 +1984,7 @@ def check_pass_through_methods(tree: ast.Module, filepath: Path, pkg: str) -> li
             Issue(
                 file=filepath,
                 line=node.lineno,
+                **_loc(node),
                 severity="info",
                 rule="pass-through-method",
                 package=pkg,
