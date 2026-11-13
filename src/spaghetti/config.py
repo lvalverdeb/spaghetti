@@ -58,6 +58,8 @@ MIN_CLONE_TOKENS = 50
 # Files whose Maintainability Index is below this are flagged; 10 is the
 # Radon rank-C boundary ("low maintainability").
 MIN_MAINTAINABILITY_INDEX = 10
+# git history window for change-frequency (hotspots, churn-weighted plan).
+HOTSPOT_WINDOW_MONTHS = 6
 MAX_CLASS_METHODS = 25
 MAX_CLASS_ATTRS = 20
 MIN_BOOLEAN_FLAGS = 3

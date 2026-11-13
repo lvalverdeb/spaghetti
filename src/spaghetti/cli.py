@@ -20,11 +20,13 @@ from spaghetti.baseline import (
     save_baseline,
     split_against_baseline,
 )
+from spaghetti.churn import ChurnError, Hotspot, churn_factor, file_churn, rank_hotspots
 from spaghetti.config import BANNER_WIDTH, LINES_PER_KLOC
 from spaghetti.diff_filter import DiffError, changed_lines, restrict_to_changed
+from spaghetti.html_report import build_html
 from spaghetti.models import Issue, ScanConfig, ScanResult, _display_path
 from spaghetti.sarif import build_sarif
-from spaghetti.scoring import compute_score, plan_report
+from spaghetti.scoring import compute_score, file_penalties, plan_report
 from spaghetti.settings import (
     FAIL_ON_CHOICES,
     Settings,
@@ -32,6 +34,18 @@ from spaghetti.settings import (
     apply_settings,
     find_pyproject,
     load_settings,
+)
+from spaghetti.snapshots import (
+    DEFAULT_STORE,
+    Comparison,
+    Snapshot,
+    SnapshotError,
+    append_snapshot,
+    compare,
+    find_snapshot,
+    git_head_sha,
+    load_snapshots,
+    take_snapshot,
 )
 
 __all__ = ["main", "resolve_packages", "discover_cwd_packages"]
@@ -177,6 +191,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         DEFAULT_MIN_DUPLICATE_LINES,
         DEFAULT_TOP_FILES,
         DEFAULT_TWIN_SIMILARITY,
+        HOTSPOT_WINDOW_MONTHS,
     )
 
     parser = argparse.ArgumentParser(description="Spaghetti Code Detector")
@@ -231,9 +246,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--format",
-        choices=["text", "json", "sarif"],
+        choices=["text", "json", "sarif", "html"],
         default=None,
-        help="Report format (default: text). 'sarif' emits SARIF 2.1.0 for code-scanning tools.",
+        help=(
+            "Report format (default: text). 'sarif' emits SARIF 2.1.0 for code-scanning "
+            "tools; 'html' a self-contained page with scorecard, trend, hotspots and findings."
+        ),
     )
     parser.add_argument(
         "--json",
@@ -272,6 +290,48 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "Report only findings on lines added or modified since git REF "
             "(e.g. origin/main). Requires the scanned paths to be inside a git repo."
         ),
+    )
+    parser.add_argument(
+        "--snapshot",
+        action="store_true",
+        help=(
+            "Append this run (git SHA, scores, per-file penalties, finding fingerprints) to "
+            "the snapshot store so later runs can --compare against it and draw trends"
+        ),
+    )
+    parser.add_argument(
+        "--snapshot-store",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help=(
+            f"JSONL snapshot store (default: {DEFAULT_STORE}, or [tool.spaghetti] snapshot-store)"
+        ),
+    )
+    parser.add_argument(
+        "--compare",
+        default=None,
+        metavar="REF",
+        help=(
+            "Report the delta against a stored snapshot: 'latest', '~N' (N runs back), a git "
+            "SHA prefix or a timestamp prefix. Shows score change, findings introduced and "
+            "fixed, files that got worse."
+        ),
+    )
+    parser.add_argument(
+        "--hotspots",
+        action="store_true",
+        help=(
+            "Rank files by health penalty × git change frequency (CodeScene-style hotspots) "
+            "and weight the --plan by it. Needs the scanned paths inside a git repository."
+        ),
+    )
+    parser.add_argument(
+        "--churn-months",
+        type=int,
+        default=None,
+        metavar="N",
+        help=f"History window for --hotspots (default: {HOTSPOT_WINDOW_MONTHS} months)",
     )
     parser.add_argument(
         "--no-pyproject",
@@ -472,6 +532,133 @@ def _apply_baseline(
     return split.new
 
 
+@dataclass
+class _History:
+    """Phase 3 context: the snapshot store, the comparison and the hotspots,
+    each optional, all surfaced in every output format."""
+
+    store: Path
+    snapshots: list[Snapshot] = field(default_factory=list)
+    current: Snapshot | None = None
+    comparison: Comparison | None = None
+    hotspots: list[Hotspot] | None = None
+    churn_by_file: dict[Path, float] = field(default_factory=dict)
+    months: int = 0
+
+    def notes(self) -> list[str]:
+        out: list[str] = []
+        if self.comparison is not None:
+            out += self.comparison.notes()
+        if self.hotspots is not None:
+            out.append(
+                f"Hotspots: {len(self.hotspots)} file(s) with findings ranked by penalty × "
+                f"change frequency over {self.months} months; --plan is churn-weighted"
+            )
+        return out
+
+    def weight(self, path: Path) -> float:
+        return self.churn_by_file.get(path.resolve(), 1.0)
+
+    def json(self) -> dict[str, object]:
+        out: dict[str, object] = {}
+        if self.comparison is not None:
+            out["compare"] = self.comparison.to_json()
+        if self.hotspots is not None:
+            out["hotspots"] = {
+                "months": self.months,
+                "files": [
+                    {
+                        "file": h.file,
+                        "penalty": h.penalty,
+                        "commits": h.commits,
+                        "authors": h.authors,
+                        "score": h.score,
+                    }
+                    for h in self.hotspots
+                ],
+            }
+        return out
+
+
+def _resolve_store(args: argparse.Namespace, settings: Settings) -> Path:
+    if args.snapshot_store is not None:
+        return args.snapshot_store
+    if settings.snapshot_store is not None:
+        return settings.snapshot_store
+    return Path.cwd() / DEFAULT_STORE
+
+
+def _build_history(
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+    settings: Settings,
+    per_package: dict[str, ScanResult],
+    total_result: ScanResult,
+) -> _History:
+    """Take, store and compare snapshots; compute hotspots. Each only when asked."""
+    history = _History(store=_resolve_store(args, settings))
+    if args.snapshot or args.compare is not None or _output_format(args) == "html":
+        _take_and_compare(args, parser, history, per_package, total_result)
+    if args.hotspots:
+        _compute_hotspots(args, parser, history, total_result)
+    return history
+
+
+def _take_and_compare(
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+    history: _History,
+    per_package: dict[str, ScanResult],
+    total_result: ScanResult,
+) -> None:
+    try:
+        history.snapshots = load_snapshots(history.store)
+        current = take_snapshot(
+            per_package,
+            total_result,
+            tool_version=_spaghetti_version(),
+            sha=git_head_sha(Path.cwd()),
+        )
+        history.current = current
+        if args.compare is not None:
+            against = find_snapshot(history.snapshots, args.compare)
+            history.comparison = compare(against, current, total_result.issues)
+    except SnapshotError as exc:
+        parser.error(str(exc))
+    if args.snapshot:
+        append_snapshot(history.store, current)
+        history.snapshots.append(current)
+        print(f"Snapshot {current.label} appended to {history.store}", file=sys.stderr)
+
+
+def _compute_hotspots(
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+    history: _History,
+    total_result: ScanResult,
+) -> None:
+    history.months = args.churn_months or _cfg.HOTSPOT_WINDOW_MONTHS
+    roots = [_det_packages()[name] for name in args.packages]
+    try:
+        churn = file_churn(roots, months=history.months)
+    except ChurnError as exc:
+        parser.error(f"--hotspots: {exc}")
+    penalties = file_penalties(total_result.issues)
+    history.hotspots = rank_hotspots(
+        {p.resolve(): v for p, v in penalties.items()},
+        churn,
+        display={p.resolve(): _display_path(p) for p in penalties},
+    )
+    max_commits = max((c.commits for c in churn.values()), default=0)
+    history.churn_by_file = {p: churn_factor(c, max_commits=max_commits) for p, c in churn.items()}
+
+
+def _det_packages() -> dict[str, Path]:
+    import spaghetti.detector as _det
+
+    return _det.PACKAGES
+
+
 def _output_format(args: argparse.Namespace) -> str:
     if args.format is not None:
         return args.format
@@ -484,16 +671,42 @@ def _emit_report(
     total_result: ScanResult,
     per_package: dict[str, ScanResult],
     gating: _Gating,
+    history: _History,
 ) -> None:
     import json
 
     fmt = _output_format(args)
+    notes = gating.notes() + history.notes()
     if args.plan:
-        print(plan_report(filtered, top=args.top))
+        note = None
+        if history.hotspots is not None:
+            note = f"Weighted by git change frequency over the last {history.months} months"
+        print(plan_report(filtered, top=args.top, weight=history.weight, note=note))
     elif fmt == "json":
         report = _json_report(filtered, total_result, per_package)
         report.update(gating.json())
+        report.update(history.json())
         print(json.dumps(report, indent=_JSON_INDENT))
+    elif fmt == "html":
+        assert history.current is not None
+        print(
+            build_html(
+                packages=list(args.packages),
+                per_package=per_package,
+                total=total_result,
+                issues=filtered,
+                tool_version=_spaghetti_version(),
+                sha=history.current.sha,
+                generated_at=history.current.timestamp,
+                notes=notes,
+                history=[s for s in history.snapshots if s is not history.current],
+                comparison=history.comparison,
+                hotspots=history.hotspots,
+                hotspot_months=history.months,
+                top=args.top,
+            ),
+            end="",
+        )
     elif fmt == "sarif":
         sarif = build_sarif(
             new=filtered,
@@ -505,7 +718,8 @@ def _emit_report(
         )
         print(json.dumps(sarif, indent=_JSON_INDENT))
     else:
-        _render_text_report(filtered, total_result, per_package, args, notes=gating.notes())
+        _render_text_report(filtered, total_result, per_package, args, notes=notes)
+        _render_hotspots(history, args.top)
 
 
 _DEFAULT_FAIL_ON = "warning"
@@ -569,7 +783,8 @@ def main() -> int:
     gated = _apply_diff_base(gated, args, parser, gating)
 
     filtered = [i for i in gated if _SEVERITY_ORDER[i.severity] >= min_severity]
-    _emit_report(args, filtered, total_result, per_package, gating)
+    history = _build_history(args, parser, settings, per_package, total_result)
+    _emit_report(args, filtered, total_result, per_package, gating, history)
     fail_on = args.fail_on or settings.fail_on or _DEFAULT_FAIL_ON
     return _exit_code(gated, fail_on)
 
@@ -819,6 +1034,25 @@ def _render_rule_summary(filtered: list[Issue]) -> None:
     for rule_name, count in sorted(rule_counts.items(), key=lambda x: -x[1]):
         rs = rule_by_severity[rule_name]
         print(f"  {rule_name:<30} {count:>5} {rs['error']:>3} {rs['warning']:>3} {rs['info']:>3}")
+    print()
+
+
+def _render_hotspots(history: _History, top: int) -> None:
+    if history.hotspots is None:
+        return
+    print("=" * BANNER_WIDTH)
+    print(f"  HOTSPOTS — health penalty × change frequency (last {history.months} months)")
+    print("=" * BANNER_WIDTH)
+    print()
+    if not history.hotspots:
+        print("  No file with findings was touched in the window.")
+        print()
+        return
+    print(f"  {'File':<58} {'Pen':>5} {'Cmt':>4} {'Auth':>4} {'Hot':>6}")
+    print(f"  {'─' * 58} {'─' * 5} {'─' * 4} {'─' * 4} {'─' * 6}")
+    for h in history.hotspots[:top]:
+        name = h.file if len(h.file) <= 58 else "…" + h.file[-57:]
+        print(f"  {name:<58} {h.penalty:>5.1f} {h.commits:>4} {h.authors:>4} {h.score:>6.1f}")
     print()
 
 

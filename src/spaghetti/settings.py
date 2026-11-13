@@ -11,6 +11,7 @@ Recognised keys (kebab-case in the file)::
     exclude = ["tests/", "migrations/"]
     fail-on = "error"                       # error | warning | info | never
     baseline = ".spaghetti-baseline.json"   # relative to the settings file
+    snapshot-store = ".spaghetti/snapshots.jsonl"  # relative to the settings file
     library-packages = ["my-lib"]           # packages transport-in-library applies to
 
     [tool.spaghetti.packages]
@@ -75,6 +76,7 @@ class Settings:
     exclude: list[str] = field(default_factory=list)
     fail_on: str | None = None
     baseline: Path | None = None
+    snapshot_store: Path | None = None
     packages: dict[str, Path] = field(default_factory=dict)
     sources: list[Path] = field(default_factory=list)
 
@@ -88,6 +90,9 @@ class Settings:
             exclude=[*self.exclude, *other.exclude],
             fail_on=other.fail_on if other.fail_on is not None else self.fail_on,
             baseline=other.baseline if other.baseline is not None else self.baseline,
+            snapshot_store=(
+                other.snapshot_store if other.snapshot_store is not None else self.snapshot_store
+            ),
             packages={**self.packages, **other.packages},
             sources=[*self.sources, *other.sources],
         )
@@ -137,7 +142,7 @@ def load_settings(*, pyproject: Path | None, yaml_path: Path | None) -> Settings
     return settings
 
 
-_SCALAR_KEYS = {"exclude", "fail-on", "baseline", "library-packages", "packages"}
+_SCALAR_KEYS = {"exclude", "fail-on", "baseline", "snapshot-store", "library-packages", "packages"}
 _TABLE_KEYS = {"thresholds", "rules", "layers"}
 
 
@@ -161,6 +166,10 @@ def parse_mapping(data: dict[str, Any], *, origin: Path) -> Settings:
         if not isinstance(baseline, str):
             raise SettingsError(f"{origin}: baseline must be a path string")
         s.baseline = (base_dir / baseline).resolve()
+    if (store := data.get("snapshot-store")) is not None:
+        if not isinstance(store, str):
+            raise SettingsError(f"{origin}: snapshot-store must be a path string")
+        s.snapshot_store = (base_dir / store).resolve()
     packages = data.get("packages", {})
     if not isinstance(packages, dict) or not all(isinstance(v, str) for v in packages.values()):
         raise SettingsError(f"{origin}: packages must map names to path strings")

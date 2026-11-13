@@ -51,6 +51,10 @@ Each package is scanned in its own worker process (`concurrent.futures.ProcessPo
 
 `spaghetti.settings` loads `[tool.spaghetti]` from `pyproject.toml` and/or the `--config` YAML and mutates `spaghetti.config` in place; every check reads thresholds from that module at call time. After the checks run, `detector.scan_package` applies `[tool.spaghetti.rules]` (drop `off` rules, rewrite severities), normalises columns, and assigns fingerprints. The CLI then applies, in order: the baseline (`spaghetti.baseline`, keyed by fingerprint), `--diff-base` (`spaghetti.diff_filter`, git hunks), and the `--severity` display floor. The exit code is computed from what survives the baseline and diff filters under the `--fail-on` policy; the display floor does not affect it.
 
+### 2.1.3 History: snapshots, comparison, churn
+
+`spaghetti.snapshots` serialises a run (`Snapshot`: SHA, timestamp, per-package scores, per-file penalties from `scoring.file_penalties`, finding fingerprints) to a JSONL store and diffs two runs by fingerprint (`compare` → `Comparison`). `spaghetti.churn` reads `git log --since --name-only` for the scanned roots and ranks files by `penalty × churn_factor`, where the factor is `1 + log2(1 + commits) / log2(1 + max_commits)` ∈ [1, 2] — relative to the repository's own hottest file so an active codebase does not promote everything to P0. `build_remediation_plan` accepts that factor as a per-file weight. `spaghetti.html_report` renders all of it as one page with inline CSS and SVG sparklines; the CLI's `_History` object carries the optional comparison and hotspots into every output format.
+
 ### 2.2 Scoring
 
 ```
@@ -348,6 +352,12 @@ The plan output includes:
 1. **Priority breakdown** — count of rules per priority level
 2. **Ranked table** — rule name, severity, effort, issue count, score, affected files
 3. **Recommended fix order** — grouped by priority with effort estimates
+
+With `--hotspots` each finding's score is multiplied by its file's churn factor (§2.1.3) and a step's files are listed hottest first.
+
+### Snapshot store, `--compare`, `--hotspots` and `--format html`
+
+`--snapshot` appends a JSON line (`schema_version` 1) to the store. `--compare REF` resolves `latest`, `~N`, a SHA prefix or a timestamp prefix and adds a `compare` object to the JSON report (`against`, `score_before/after/delta`, `packages`, `introduced`, `fixed`, `files_worse`, `files_better`); `--hotspots` adds `hotspots` (`months`, `files[]` with `penalty`, `commits`, `authors`, `score`). Both are additive to schema v1. `--format html` writes a single self-contained HTML document to stdout.
 
 ## 8. What the Detector Does NOT Check
 

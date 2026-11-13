@@ -85,6 +85,59 @@
         }
       }
     },
+    "compare": {
+      "type": "object",
+      "description": "Present when --compare was given (added in 2.1).",
+      "required": ["against", "score_before", "score_after", "score_delta", "packages", "introduced", "fixed", "files_worse", "files_better"],
+      "properties": {
+        "against": {
+          "type": "object",
+          "properties": {
+            "sha": {"type": ["string", "null"]},
+            "timestamp": {"type": "string"}
+          }
+        },
+        "score_before": {"type": "number"},
+        "score_after": {"type": "number"},
+        "score_delta": {"type": "number"},
+        "packages": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "before": {"type": ["number", "null"]},
+              "after": {"type": "number"}
+            }
+          }
+        },
+        "introduced": {"type": "array", "items": {"$ref": "#/$defs/snapshotFinding"}},
+        "fixed": {"type": "array", "items": {"$ref": "#/$defs/snapshotFinding"}},
+        "files_worse": {"type": "array", "items": {"$ref": "#/$defs/fileDelta"}},
+        "files_better": {"type": "array", "items": {"$ref": "#/$defs/fileDelta"}}
+      }
+    },
+    "hotspots": {
+      "type": "object",
+      "description": "Present when --hotspots was given (added in 2.1).",
+      "required": ["months", "files"],
+      "properties": {
+        "months": {"type": "integer", "minimum": 1},
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["file", "penalty", "commits", "authors", "score"],
+            "properties": {
+              "file": {"type": "string"},
+              "penalty": {"type": "number"},
+              "commits": {"type": "integer"},
+              "authors": {"type": "integer"},
+              "score": {"type": "number"}
+            }
+          }
+        }
+      }
+    },
     "baseline": {
       "type": [
         "object",
@@ -136,6 +189,27 @@
     }
   },
   "$defs": {
+    "snapshotFinding": {
+      "type": "object",
+      "required": ["fingerprint", "rule", "severity", "file", "line", "message"],
+      "properties": {
+        "fingerprint": {"type": "string"},
+        "rule": {"type": "string"},
+        "severity": {"$ref": "#/$defs/severity"},
+        "file": {"type": "string"},
+        "line": {"type": "integer"},
+        "message": {"type": "string"}
+      }
+    },
+    "fileDelta": {
+      "type": "object",
+      "required": ["file", "before", "after"],
+      "properties": {
+        "file": {"type": "string"},
+        "before": {"type": "number"},
+        "after": {"type": "number"}
+      }
+    },
     "severity": {
       "enum": [
         "info",

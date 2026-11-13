@@ -545,3 +545,59 @@ def test_sarif_output_is_well_formed(project: Path):
     }
     assert all(not u.startswith("/") for u in uris)
     assert "src/mylib/m.py" in uris
+
+
+# ── Phase 3: snapshots, compare, hotspots, html ──────────────────────────────
+
+
+def test_snapshot_then_compare_reports_the_introduced_finding(project: Path):
+    store = project / ".spaghetti" / "snapshots.jsonl"
+    _run_cli(project, "--snapshot", "--snapshot-store", str(store), "--fail-on", "never")
+    assert len(store.read_text().splitlines()) == 1
+    (project / "src" / "mylib" / "extra.py").write_text("def g(a: int) -> int:\n    return a\n")
+    proc = _run_cli(
+        project,
+        "--compare",
+        "latest",
+        "--snapshot-store",
+        str(store),
+        "--fail-on",
+        "never",
+        "--json",
+    )
+    report = json.loads(proc.stdout)
+    introduced = report["compare"]["introduced"]
+    assert [i["rule"] for i in introduced] == ["too-many-params"]
+    assert report["compare"]["fixed"] == []
+    assert report["compare"]["files_worse"][0]["file"].endswith("extra.py")
+    assert report["compare"]["score_delta"] == round(
+        report["compare"]["score_after"] - report["compare"]["score_before"], 1
+    )
+
+
+def test_compare_with_unknown_reference_is_a_usage_error(project: Path):
+    proc = _run_cli(project, "--compare", "nope", "--fail-on", "never")
+    assert proc.returncode == 2 and "snapshot store is empty" in proc.stderr
+
+
+def test_hotspots_rank_and_weight_the_plan(project: Path):
+    proc = _run_cli(project, "--hotspots", "--fail-on", "never", "--json")
+    hotspots = json.loads(proc.stdout)["hotspots"]
+    assert hotspots["months"] == 6
+    assert hotspots["files"] and hotspots["files"][0]["commits"] >= 1
+    plan = _run_cli(project, "--hotspots", "--plan", "--fail-on", "never").stdout
+    assert "Weighted by git change frequency" in plan
+
+
+def test_html_format_writes_a_single_page_with_trend(project: Path):
+    store = project / "snap.jsonl"
+    for _ in range(3):
+        _run_cli(
+            project, "--snapshot", "--snapshot-store", str(store), "--fail-on", "never", "--quiet"
+        )
+    proc = _run_cli(
+        project, "--format", "html", "--snapshot-store", str(store), "--fail-on", "never"
+    )
+    assert proc.stdout.startswith("<!DOCTYPE html>")
+    assert 'aria-label="4 snapshot(s)"' in proc.stdout
+    assert "<h2>Findings" in proc.stdout

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Callable
+from pathlib import Path
 
 from spaghetti.config import BANNER_WIDTH, DEFAULT_PLAN_TOP, LINES_PER_KLOC
 from spaghetti.models import Issue, RemediationStep, ScanResult, _display_path
@@ -11,6 +13,7 @@ __all__ = [
     "compute_score",
     "compute_priority_score",
     "build_remediation_plan",
+    "file_penalties",
     "plan_report",
 ]
 
@@ -19,6 +22,16 @@ __all__ = [
 _SEVERITY_WEIGHT = {"error": 6.0, "warning": 1.5, "info": 0.3}
 _GRADE_BANDS = [(90.0, "A"), (75.0, "B"), (60.0, "C"), (40.0, "D"), (0.0, "F")]
 _MAX_SCORE = 100.0
+
+
+def file_penalties(issues: list[Issue]) -> dict[Path, float]:
+    """Per-file health cost: the sum of severity weights of its findings — the
+    same quantity ``compute_score`` normalises per KLOC, left raw so files can
+    be ranked and tracked across snapshots."""
+    penalties: dict[Path, float] = defaultdict(float)
+    for issue in issues:
+        penalties[issue.file] += _SEVERITY_WEIGHT[issue.severity]
+    return dict(penalties)
 
 
 def compute_score(result: ScanResult) -> tuple[float, str]:
@@ -119,21 +132,31 @@ def _priority_label(score: float) -> tuple[str, str]:
     return "P3", "LOW — track in backlog"
 
 
-def build_remediation_plan(issues: list[Issue]) -> list[RemediationStep]:
+def build_remediation_plan(
+    issues: list[Issue], *, weight: Callable[[Path], float] | None = None
+) -> list[RemediationStep]:
     """Group issues by rule, compute priority scores, and return an ordered
-    list of RemediationSteps."""
+    list of RemediationSteps. ``weight`` (default 1) multiplies a finding's
+    score by its file's churn factor so P0 is "worst *and* hottest", not just
+    worst (see ``spaghetti.churn``); files inside a step are listed hottest
+    first."""
     by_rule: dict[str, list[Issue]] = defaultdict(list)
     for issue in issues:
         by_rule[issue.rule].append(issue)
+    weight_of = weight or (lambda _path: 1.0)
 
     steps: list[RemediationStep] = []
     for rule, rule_issues in by_rule.items():
         effort = _FIX_EFFORT.get(rule, 1.0)
         max_sev = max(rule_issues, key=lambda i: _SEVERITY_WEIGHT[i.severity])
-        score = _SEVERITY_WEIGHT[max_sev.severity] * effort
+        score = max(_SEVERITY_WEIGHT[i.severity] * effort * weight_of(i.file) for i in rule_issues)
         priority, _ = _priority_label(score)
 
-        files = sorted({_display_path(i.file) for i in rule_issues})
+        hottest: dict[str, float] = {}
+        for i in rule_issues:
+            path = _display_path(i.file)
+            hottest[path] = max(hottest.get(path, 0.0), weight_of(i.file))
+        files = sorted(hottest, key=lambda p: (-hottest[p], p))
 
         steps.append(
             RemediationStep(
@@ -152,38 +175,47 @@ def build_remediation_plan(issues: list[Issue]) -> list[RemediationStep]:
     return steps
 
 
-def plan_report(issues: list[Issue], *, top: int = DEFAULT_PLAN_TOP) -> str:
+def plan_report(
+    issues: list[Issue],
+    *,
+    top: int = DEFAULT_PLAN_TOP,
+    weight: Callable[[Path], float] | None = None,
+    note: str | None = None,
+) -> str:
     """Render a prioritized remediation plan as a text report."""
-    steps = build_remediation_plan(issues)
-    lines: list[str] = []
-
-    lines.append("=" * BANNER_WIDTH)
-    lines.append("  REMEDIATION PLAN — Prioritized Fix Order")
-    lines.append("=" * BANNER_WIDTH)
+    steps = build_remediation_plan(issues, weight=weight)
+    lines = ["=" * BANNER_WIDTH, "  REMEDIATION PLAN — Prioritized Fix Order", "=" * BANNER_WIDTH]
+    if note:
+        lines.append(f"  {note}")
     lines.append("")
-
     if not steps:
         lines.append("  All clean — nothing to fix.")
         return "\n".join(lines)
+    lines += _plan_breakdown(steps)
+    lines += _plan_table(steps, top)
+    lines += ["", "=" * BANNER_WIDTH, "  RECOMMENDED FIX ORDER", "=" * BANNER_WIDTH, ""]
+    lines += _plan_fix_order(steps)
+    return "\n".join(lines)
 
+
+def _plan_breakdown(steps: list[RemediationStep]) -> list[str]:
     by_priority: dict[str, int] = defaultdict(int)
     for step in steps:
         by_priority[step.priority] += 1
-
-    lines.append("  Priority breakdown:")
+    lines = ["  Priority breakdown:"]
     for _, label, desc in _PRIORITY_LEVELS:
-        count = by_priority.get(label, 0)
-        if count:
-            lines.append(f"    {label}: {count} rule(s) — {desc}")
+        if by_priority.get(label):
+            lines.append(f"    {label}: {by_priority[label]} rule(s) — {desc}")
     lines.append("")
+    return lines
 
-    lines.append(
-        f"  {'#':<3} {'Pri':<4} {'Rule':<30} {'Sev':<4} {'Effort':<9} {'Issues':>6}  {'Score':>5}"
-    )
-    lines.append(_PLAN_TABLE_DIVIDER)
 
-    shown = steps[:top]
-    for idx, step in enumerate(shown, 1):
+def _plan_table(steps: list[RemediationStep], top: int) -> list[str]:
+    lines = [
+        f"  {'#':<3} {'Pri':<4} {'Rule':<30} {'Sev':<4} {'Effort':<9} {'Issues':>6}  {'Score':>5}",
+        _PLAN_TABLE_DIVIDER,
+    ]
+    for idx, step in enumerate(steps[:top], 1):
         sev_icon = {"error": "✖", "warning": "⚠", "info": "ℹ"}[step.severity]
         file_preview = step.files[0] if step.files else "?"
         if len(step.files) > 1:
@@ -193,26 +225,20 @@ def plan_report(issues: list[Issue], *, top: int = DEFAULT_PLAN_TOP) -> str:
             f"{step.effort:<9} {step.count:>6}  {step.score:>5.1f}"
         )
         lines.append(f"      └─ {file_preview}")
-
     if len(steps) > top:
         lines.append(f"  ... and {len(steps) - top} more rules (use --plan to see all)")
+    return lines
 
-    lines.append("")
-    lines.append("=" * BANNER_WIDTH)
-    lines.append("  RECOMMENDED FIX ORDER")
-    lines.append("=" * BANNER_WIDTH)
-    lines.append("")
 
+def _plan_fix_order(steps: list[RemediationStep]) -> list[str]:
+    lines: list[str] = []
     for _, label, desc in _PRIORITY_LEVELS:
         level_steps = [s for s in steps if s.priority == label]
         if not level_steps:
             continue
         lines.append(f"  {label} — {desc}")
         for step in level_steps:
-            lines.append(
-                f"    • {step.rule} ({step.count} issue{'s' if step.count != 1 else ''}, "
-                f"{step.effort} effort)"
-            )
+            plural = "s" if step.count != 1 else ""
+            lines.append(f"    • {step.rule} ({step.count} issue{plural}, {step.effort} effort)")
         lines.append("")
-
-    return "\n".join(lines)
+    return lines

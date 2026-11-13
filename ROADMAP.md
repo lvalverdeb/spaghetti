@@ -186,6 +186,13 @@ Acceptance: a repo with 20 synthetic commits produces a trend chart; the hotspot
 on `fastapi` puts its routing core above its rarely-touched utility modules; `--compare`
 between two SHAs reports the exact findings a known commit introduced.
 
+*Status 2026-11-13 (Python, version 2.1.0):* all four items landed — JSONL snapshot store
+(`--snapshot`, `--snapshot-store`), `--compare REF` with fingerprint matching, `--hotspots`
+with a churn-weighted `--plan`, and `--format html`. On a 400-commit `fastapi` clone the
+hotspot ranking is `dependencies/utils.py`, `routing.py`, `openapi/utils.py` — the routing
+core — above every utility module. The trend chart is covered by a CLI test with a
+snapshot series rather than 20 commits. Rust mirror pending.
+
 ### Phase 4 — Ecosystem and agent interface (≈ 3–4 weeks)
 
 - **Editor integration.** Either an LSP server (Rust, `tower-lsp`) publishing

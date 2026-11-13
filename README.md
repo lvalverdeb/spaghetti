@@ -327,6 +327,36 @@ Needs `security-events: write` to upload SARIF (set `upload-sarif: false` otherw
       args: ["--diff-base", "HEAD"]
 ```
 
+## Trend, Compare, Hotspots and the HTML Report
+
+Linters answer "what is wrong now". These answer "is it getting better, what did this
+change do, and where should the effort go".
+
+```bash
+spaghetti --snapshot                       # append this run to .spaghetti/snapshots.jsonl
+spaghetti --compare latest                 # delta vs the last snapshot: score, introduced, fixed, files worse
+spaghetti --compare ~3                     # vs three snapshots back; a SHA or timestamp prefix also works
+spaghetti --hotspots                       # files ranked by health penalty × git change frequency
+spaghetti --hotspots --plan                # the remediation plan, weighted by that churn
+spaghetti --format html > report.html      # one self-contained page: scorecard, trend, hotspots, findings
+```
+
+- **Snapshots** record the git SHA, timestamp, per-package scores, per-file penalties and
+  every finding's fingerprint. The store is a JSONL file (`--snapshot-store`, or
+  `snapshot-store` in `[tool.spaghetti]`), so it diffs and merges like any text file.
+- **Compare** matches findings by fingerprint, so a finding that moved lines is neither
+  introduced nor fixed. The JSON report gains a `compare` object; the text and HTML reports
+  a summary line plus the introduced and fixed lists. Run it in CI with `--snapshot` on the
+  default branch and `--compare latest` on PRs.
+- **Hotspots** are CodeScene's idea: a file that is both tangled and actively edited is
+  where remediation pays off; a tangled file nobody touches can wait. Change frequency is
+  commits touching the file in the last `--churn-months` (default 6) with the author count
+  alongside. Each finding's priority in `--plan` is multiplied by a factor between 1 (file
+  untouched) and 2 (the repository's most-edited file), log-scaled, so P0 means
+  "worst *and* hottest".
+- **HTML** needs no server or account. Trend sparklines come from the snapshot store when
+  one exists.
+
 ## Configuring Packages
 
 With no flags, `spaghetti` auto-discovers packages from the current directory: every immediate subdirectory containing at least one `.py` file becomes its own named package (skipping `.venv`, `.git`, `__pycache__`, `node_modules`, and similar noise directories), and any loose `.py` files sitting directly in the current directory are grouped into one more package named after the directory itself. To point it at other packages — in this workspace, another workspace, or any directory on disk — use `--config` and/or `--package`.
