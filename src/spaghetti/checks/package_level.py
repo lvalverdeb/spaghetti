@@ -256,7 +256,10 @@ def _twin_pairs(
     for name, (node, _is_async) in by_name.items():
         if _line_count(node) < _cfg.MIN_TWIN_FUNCTION_LINES:
             continue
-        for candidate in _twin_candidates(name):
+        # Sorted: a set's iteration order follows the hash seed, and a function
+        # with two counterparts (get / aget / get_async) must report them in
+        # the same order on every run.
+        for candidate in sorted(_twin_candidates(name)):
             if candidate != name and candidate in by_name:
                 yield name, candidate
 

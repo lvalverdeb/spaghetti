@@ -161,6 +161,8 @@ def _scan_one_file(
                 raw_imports=result.raw_imports.get(py_file),
                 tokens=result.token_streams.get(py_file),
             ),
+            file=py_file,
+            package=pkg_name,
         )
     return source, tree
 

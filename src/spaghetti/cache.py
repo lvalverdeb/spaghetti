@@ -1,6 +1,7 @@
 """Incremental per-file cache: skip the per-file checks for unchanged files.
 
-An entry is keyed by the SHA-1 of a file's text and lives under a directory
+An entry is keyed by the SHA-1 of package, path and the file's text (paths
+matter: test files and layer prefixes change findings) and lives under a directory
 named by the *configuration key* — a hash of the applied settings, the tool
 version and the Python minor version — so changing a threshold or upgrading
 invalidates everything at once without a manifest. An entry holds exactly
@@ -117,28 +118,33 @@ class FileCache:
         self.dir = root / key
 
     @staticmethod
-    def _content_hash(source: str) -> str:
-        return hashlib.sha1(source.encode("utf-8", errors="replace")).hexdigest()
+    def _entry_name(source: str, file: Path, package: str) -> str:
+        # Package and path are part of the key: several checks look at the path
+        # (test files are exempt from typing rules, layer rules match prefixes),
+        # so identical content at two paths can legitimately differ.
+        digest = hashlib.sha1(f"{package}\0{file}\0".encode("utf-8", errors="replace"))
+        digest.update(source.encode("utf-8", errors="replace"))
+        return digest.hexdigest()
 
-    def _path(self, source: str) -> Path:
-        return self.dir / f"{self._content_hash(source)}.json"
+    def _path(self, source: str, file: Path, package: str) -> Path:
+        return self.dir / f"{self._entry_name(source, file, package)}.json"
 
     def load(self, source: str, *, file: Path, package: str) -> FileEntry | None:
         try:
-            data = json.loads(self._path(source).read_text(encoding="utf-8"))
+            data = json.loads(self._path(source, file, package).read_text(encoding="utf-8"))
             if data.get("schema_version") != CACHE_SCHEMA_VERSION:
                 return None
             return FileEntry.from_json(data, file=file, package=package)
         except (OSError, ValueError, KeyError, TypeError, IndexError):
             return None
 
-    def store(self, source: str, entry: FileEntry) -> None:
+    def store(self, source: str, entry: FileEntry, *, file: Path, package: str) -> None:
         try:
             self.dir.mkdir(parents=True, exist_ok=True)
             body = json.dumps({"schema_version": CACHE_SCHEMA_VERSION, **entry.to_json()})
             fd, tmp = tempfile.mkstemp(dir=self.dir, suffix=".tmp")
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 fh.write(body)
-            os.replace(tmp, self._path(source))
+            os.replace(tmp, self._path(source, file, package))
         except OSError:
             pass  # a cache that cannot be written is a cache that misses

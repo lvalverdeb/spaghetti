@@ -325,6 +325,10 @@ def _bare_dict_names(annotation: ast.AST) -> list[ast.Name]:
     found: list[ast.Name] = []
 
     def visit(n: ast.AST) -> None:
+        if isinstance(n, ast.Call):
+            # Annotated[dict[str, int], Field(default_factory=dict)]: the call is
+            # metadata and its ``dict`` is a value, not a type.
+            return
         if isinstance(n, ast.Subscript) and isinstance(n.value, ast.Name) and n.value.id == "dict":
             visit(n.slice)
             return

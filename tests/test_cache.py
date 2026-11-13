@@ -101,6 +101,21 @@ def test_unwritable_cache_dir_is_silent(pkg: Path, tmp_path: Path):
     assert FileCache(blocker, "k").load(SOURCE, file=pkg / "m.py", package="pkg") is None
 
 
+def test_identical_content_at_different_paths_is_not_shared(tmp_path: Path, monkeypatch):
+    root = tmp_path / "pkg"
+    (root / "tests").mkdir(parents=True)
+    body = "def f(a):\n    return a\n"
+    (root / "a.py").write_text(body)
+    (root / "tests" / "test_a.py").write_text(body)  # test files are exempt from typing rules
+    monkeypatch.setattr(ds, "PACKAGES", {"pkg": root})
+    plain = _scan(root, ScanConfig(exclude=[], min_duplicate_lines=5, twin_similarity=0.6))
+    _scan(root, _config(tmp_path))
+    warm = _scan(root, _config(tmp_path))
+    assert warm.cache_hits == 2
+    assert warm.issues == plain.issues
+    assert {i.file.name for i in plain.issues if i.rule.startswith("missing-")} == {"a.py"}
+
+
 def test_scan_limits_emit_an_info_finding_and_skip_the_file(tmp_path: Path, monkeypatch):
     root = tmp_path / "pkg"
     root.mkdir()

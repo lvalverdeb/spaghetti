@@ -217,3 +217,18 @@ def test_sync_async_twins_reported_once_per_class(tmp_path: Path):
     tree = ast.parse(body)
     issues = check_sync_async_twins_pkg("pkg", [(path, tree)], 0.6)
     assert [i.line for i in issues if i.rule == "sync-async-duplication"] == [2, 11]
+
+
+def test_twin_pairs_are_reported_in_a_seed_independent_order(tmp_path: Path):
+    body = "".join(
+        f"{'async ' if name != 'get' else ''}def {name}(self):\n"
+        "    a = self.s.read()\n    b = self.d(a)\n    c = self.e(b)\n    return c\n"
+        for name in ("get", "aget", "get_async")
+    )
+    path = tmp_path / "m.py"
+    path.write_text(body)
+    issues = check_sync_async_twins_pkg("pkg", [(path, ast.parse(body))], 0.6)
+    assert [i.message.split(" are ")[0] for i in issues] == [
+        "get() and aget()",
+        "get() and get_async()",
+    ]

@@ -1871,3 +1871,15 @@ def test_check_pass_through_methods_allows_docstring_only_body_to_still_flag():
     )
     issues = check_pass_through_methods(_parse(source), Path("f.py"), "pkg")
     assert len(issues) == 1
+
+
+def test_untyped_dict_ignores_dict_as_a_value_inside_annotation_metadata(tmp_path: Path):
+    body = (
+        "from typing import Annotated\n"
+        "from pydantic import Field\n"
+        "class M:\n"
+        "    tags: Annotated[dict[str, int], Field(default_factory=dict)]\n"
+        "    raw: Annotated[dict, Field(default_factory=dict)]\n"
+    )
+    issues = check_untyped_dicts(ast.parse(body), tmp_path / "m.py", "pkg")
+    assert [i.line for i in issues] == [5]
