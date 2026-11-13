@@ -22,6 +22,8 @@ from __future__ import annotations
 import ast
 import asyncio
 import concurrent.futures
+import os
+import sys
 import threading
 from pathlib import Path
 
@@ -1805,6 +1807,48 @@ def test_scan_package_handles_syntax_error(tmp_path: Path):
     )
     assert result.files_scanned == 1
     assert any(i.rule == "syntax-error" for i in result.issues)
+
+
+def _scan_one(pkg_dir: Path) -> ds.ScanResult:
+    return ds.scan_package(
+        pkg_dir.name,
+        pkg_dir,
+        config=ScanConfig(exclude=[], min_duplicate_lines=5, twin_similarity=0.6),
+    )
+
+
+def test_scan_package_reports_broken_symlink_as_unreadable_file(tmp_path: Path):
+    # Regression: one unreadable file used to raise out of scan_package and
+    # take the whole run down with a traceback instead of a finding.
+    pkg_dir = tmp_path / "pkg"
+    pkg_dir.mkdir()
+    (pkg_dir / "ok.py").write_text("X = 1\n")
+    (pkg_dir / "dangling.py").symlink_to(tmp_path / "does-not-exist.py")
+    result = _scan_one(pkg_dir)
+    assert result.files_scanned == 2
+    unreadable = [i for i in result.issues if i.rule == "unreadable-file"]
+    assert [i.file.name for i in unreadable] == ["dangling.py"]
+    assert unreadable[0].severity == "error"
+    assert unreadable[0].line == 1
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" or os.geteuid() == 0,
+    reason="chmod 000 is not enforced for root or on Windows",
+)
+def test_scan_package_reports_permission_denied_as_unreadable_file(tmp_path: Path):
+    pkg_dir = tmp_path / "pkg"
+    pkg_dir.mkdir()
+    secret = pkg_dir / "secret.py"
+    secret.write_text("X = 1\n")
+    secret.chmod(0o000)
+    try:
+        result = _scan_one(pkg_dir)
+    finally:
+        secret.chmod(0o644)
+    assert result.files_scanned == 1
+    assert [i.rule for i in result.issues] == ["unreadable-file"]
+    assert "Permission denied" in result.issues[0].message
 
 
 # ── Cross-File: Import Cycles ───────────────────────────────────────────────

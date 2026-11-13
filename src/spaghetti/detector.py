@@ -73,9 +73,22 @@ def scan_package(pkg_name: str, pkg_path: Path, *, config: ScanConfig) -> ScanRe
             continue
         if any(pattern in path_str for pattern in config.exclude):
             continue
-        source = py_file.read_text(encoding="utf-8", errors="replace")
-        source_lines_by_file[py_file] = source.splitlines()
         result.files_scanned += 1
+        try:
+            source = py_file.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            result.issues.append(
+                Issue(
+                    file=py_file,
+                    line=1,
+                    severity="error",
+                    rule="unreadable-file",
+                    package=pkg_name,
+                    message=f"Failed to read file — {exc.strerror or exc}",
+                )
+            )
+            continue
+        source_lines_by_file[py_file] = source.splitlines()
         result.total_lines += _file_line_count(source)
 
         for source_check in SOURCE_CHECKS:

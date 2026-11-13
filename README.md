@@ -180,13 +180,13 @@ The plan groups issues by rule, counts affected files, and lists a recommended f
 
 ## Rules
 
-The detector checks **39 rules** across four tiers:
+The detector checks **40 rules** across four tiers:
 
 **Per-file AST checks (31 rules):** `long-function`, `high-complexity`, `missing-return-type`, `missing-param-type`, `too-many-params`, `excessive-returns`, `boolean-flag-params`, `deep-nesting`, `untyped-dict`, `unused-import`, `swallowed-exception`, `duplicate-branch`, `encapsulation-violation`, `god-class` (also factors in WMC — total cyclomatic complexity summed across a class's methods — alongside method/attribute counts), `layer-violation`, `transport-in-library`, `potential-circular-import`, `god-module`, `mutable-default`, `bare-except`, `star-import`, `global-mutable`, `scope-mutation`, `dead-code`, `message-chain`, `excessive-decorators`, `magic-number`, `magic-string`, `missing-else`, `lazy-class`, `deep-inheritance`, `pass-through-method`.
 
 **Per-file source-text checks (2 rules):** `long-file`, `todo-marker`.
 
-**Infrastructure checks (1 rule):** `syntax-error` (files that fail `ast.parse()`).
+**Infrastructure checks (2 rules):** `syntax-error` (files that fail `ast.parse()`), `unreadable-file` (files that cannot be read at all — broken symlink, permission denied).
 
 **Per-package cross-file checks (5 rules):** `import-cycle`, `high-coupling` (a module with both high fan-in and high fan-out), `orphan-interface` (an abstract class with exactly one implementation), `duplicate-function-body`, `sync-async-duplication`.
 

@@ -169,7 +169,7 @@ El detector verifica **36 reglas** en cuatro niveles:
 
 **Verificaciones de texto fuente por archivo (2 reglas):** `long-file`, `todo-marker`.
 
-**Verificaciones de infraestructura (1 regla):** `syntax-error` (archivos que fallan `ast.parse()`).
+**Verificaciones de infraestructura (2 reglas):** `syntax-error` (archivos que fallan `ast.parse()`), `unreadable-file` (archivos que no se pueden leer — enlace simbólico roto, permiso denegado).
 
 **Verificaciones entre archivos por paquete (3 reglas):** `import-cycle`, `duplicate-function-body`, `sync-async-duplication`.
 

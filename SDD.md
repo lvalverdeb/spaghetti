@@ -99,13 +99,14 @@ Exit codes: 0 = clean, 1 = warnings present, 2 = errors present.
 | `long-file` | warning | >400 lines | Files exceeding the line limit |
 | `todo-marker` | info | — | TODO/FIXME/XXX/HACK comments |
 
-### 3.3 Infrastructure Checks (1 rule)
+### 3.3 Infrastructure Checks (2 rules)
 
 | Rule | Severity | Threshold | What It Catches |
 |------|----------|-----------|-----------------|
 | `syntax-error` | error | — | Files that fail `ast.parse()` — blocks all deeper AST analysis |
+| `unreadable-file` | error | — | Files that cannot be read (broken symlink, permission denied, I/O error) — blocks all analysis of that file |
 
-> `syntax-error` is emitted before any `ALL_CHECKS` run. When a file has a syntax error, no other AST rules are applied to it.
+> `unreadable-file` is emitted before anything else for that file; the file still counts toward `files_scanned` but contributes no lines and no other findings. `syntax-error` is emitted before any `ALL_CHECKS` run. When a file has a syntax error, no other AST rules are applied to it.
 
 ### 3.4 Per-Package Cross-File Checks (5 rules)
 

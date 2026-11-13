@@ -169,7 +169,7 @@ Le détecteur vérifie **36 règles** sur quatre niveaux :
 
 **Vérifications de texte source par fichier (2 règles) :** `long-file`, `todo-marker`.
 
-**Vérifications d'infrastructure (1 règle) :** `syntax-error` (fichiers échouant `ast.parse()`).
+**Vérifications d'infrastructure (2 règles) :** `syntax-error` (fichiers échouant `ast.parse()`), `unreadable-file` (fichiers illisibles — lien symbolique cassé, permission refusée).
 
 **Vérifications inter-fichiers par paquete (3 règles) :** `import-cycle`, `duplicate-function-body`, `sync-async-duplication`.
 
