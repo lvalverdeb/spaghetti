@@ -64,3 +64,12 @@ def test_rank_hotspots_prefers_tangled_and_hot_over_tangled_and_cold():
     assert [h.file for h in spots] == ["hot.py", "cold.py"]  # clean.py never a hotspot
     assert spots[0].score == 12.0 and spots[0].commits == 20 and spots[0].authors == 3
     assert spots[1].score < spots[1].penalty * 1.3
+
+
+def test_file_churn_sees_non_ascii_paths(repo: Path):
+    odd = repo / "pkg" / "café.py"
+    odd.write_text("z = 1\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "non-ascii")
+    churn = file_churn([repo / "pkg"], months=6)
+    assert churn[odd.resolve()] == Churn(commits=1, authors=1)

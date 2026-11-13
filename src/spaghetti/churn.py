@@ -24,7 +24,15 @@ class Churn:
 
 def _git(cwd: Path, *args: str) -> str:
     try:
-        proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=False)
+        # core.quotePath=false: otherwise non-ASCII paths come back quoted and
+        # octal-escaped and never match the scanned files.
+        proc = subprocess.run(
+            ["git", "-c", "core.quotePath=false", *args],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
     except FileNotFoundError as exc:
         raise ChurnError("git executable not found") from exc
     if proc.returncode != 0:

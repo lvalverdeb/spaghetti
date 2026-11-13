@@ -97,7 +97,9 @@ class Snapshot:
         }
 
     @classmethod
-    def from_json(cls, data: dict[str, object], *, origin: str) -> Snapshot:
+    def from_json(cls, data: object, *, origin: str) -> Snapshot:
+        if not isinstance(data, dict):
+            raise SnapshotError(f"{origin}: malformed snapshot (not an object)")
         if data.get("schema_version") != SNAPSHOT_SCHEMA_VERSION:
             raise SnapshotError(
                 f"{origin}: unsupported snapshot schema_version {data.get('schema_version')!r}"
@@ -159,7 +161,10 @@ def load_snapshots(store: Path) -> list[Snapshot]:
     if not store.exists():
         return []
     snapshots: list[Snapshot] = []
-    for number, line in enumerate(store.read_text(encoding="utf-8").splitlines(), start=1):
+    # Split on "\n" only: the store is written with ensure_ascii=False, and
+    # str.splitlines() would also break lines at U+2028/U+2029/U+0085 inside
+    # a path or message.
+    for number, line in enumerate(store.read_text(encoding="utf-8").split("\n"), start=1):
         if not line.strip():
             continue
         try:

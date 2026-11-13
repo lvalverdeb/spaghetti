@@ -104,3 +104,13 @@ def test_compare_reports_introduced_fixed_and_files_moved():
     assert js["against"] == {"sha": "abc123def456", "timestamp": "2026-11-13T10:00:00+00:00"}
     assert js["introduced"][0]["line"] == 9 and js["fixed"][0]["fingerprint"] == "gone"
     assert "introduced" in comp.notes()[0] and "+" in comp.notes()[0]
+
+
+def test_store_survives_unicode_line_separators_and_non_object_lines(tmp_path: Path):
+    store = tmp_path / "s.jsonl"
+    snap = _snap(_issue("aaaa", file="/w/pkg/a b.py"))
+    append_snapshot(store, snap)
+    assert load_snapshots(store) == [snap]
+    store.write_text("[]\n")
+    with pytest.raises(SnapshotError, match="not an object"):
+        load_snapshots(store)

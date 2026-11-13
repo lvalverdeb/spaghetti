@@ -159,11 +159,28 @@ def _common_argv(args: dict[str, Any]) -> tuple[list[str], Path]:
     return argv, cwd
 
 
+def _last_stderr_line(proc: subprocess.CompletedProcess[str]) -> str:
+    lines = proc.stderr.strip().splitlines()
+    return lines[-1] if lines else ""
+
+
+def _required(args: dict[str, Any], key: str) -> str:
+    value = args.get(key)
+    if not isinstance(value, str) or not value:
+        raise ToolError(f"missing required argument '{key}'")
+    return value
+
+
+def _int_arg(args: dict[str, Any], key: str) -> int:
+    value = args[key]
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ToolError(f"'{key}' must be an integer")
+    return value
+
+
 def _json_from(proc: subprocess.CompletedProcess[str]) -> dict[str, Any]:
     if proc.returncode == 2 and not proc.stdout.strip():
-        raise ToolError(
-            proc.stderr.strip().splitlines()[-1] if proc.stderr.strip() else "usage error"
-        )
+        raise ToolError(_last_stderr_line(proc) or "usage error")
     try:
         return json.loads(proc.stdout)
     except json.JSONDecodeError as exc:
@@ -204,8 +221,8 @@ def _scan(args: dict[str, Any], run: Runner) -> dict[str, Any]:
 def _plan(args: dict[str, Any], run: Runner) -> dict[str, Any]:
     argv, cwd = _common_argv(args)
     argv += ["--plan", "--json"]
-    if args.get("top"):
-        argv += ["--top", str(int(args["top"]))]
+    if args.get("top") is not None:
+        argv += ["--top", str(_int_arg(args, "top"))]
     if args.get("hotspots"):
         argv += ["--hotspots"]
     return _json_from(run(argv, cwd))
@@ -213,7 +230,7 @@ def _plan(args: dict[str, Any], run: Runner) -> dict[str, Any]:
 
 def _compare(args: dict[str, Any], run: Runner) -> dict[str, Any]:
     argv, cwd = _common_argv(args)
-    argv += ["--json", "--compare", str(args["ref"])]
+    argv += ["--json", "--compare", _required(args, "ref")]
     if args.get("store"):
         argv += ["--snapshot-store", str(args["store"])]
     return _json_from(run(argv, cwd))["compare"]
@@ -223,13 +240,15 @@ def _baseline(args: dict[str, Any], run: Runner) -> dict[str, Any]:
     argv, cwd = _common_argv(args)
     if args.get("baseline"):
         argv += ["--baseline", str(args["baseline"])]
-    if args["action"] == "update":
+    action = _required(args, "action")
+    if action not in ("status", "update"):
+        raise ToolError("action must be 'status' or 'update'")
+    if action == "update":
         proc = run([*argv, "--update-baseline"], cwd)
+        last_line = _last_stderr_line(proc)
         if proc.returncode != 0:
-            raise ToolError(
-                proc.stderr.strip().splitlines()[-1] if proc.stderr.strip() else "failed"
-            )
-        return {"updated": True, "message": proc.stderr.strip().splitlines()[-1]}
+            raise ToolError(last_line or "failed")
+        return {"updated": True, "message": last_line}
     report = _json_from(run([*argv, "--json"], cwd))
     return {"baseline": report.get("baseline"), "new_findings": len(report["issues"])}
 
@@ -265,11 +284,19 @@ def _tool_result(name: str, args: dict[str, Any], run: Runner) -> dict[str, Any]
     }
 
 
-def handle(message: dict[str, Any], *, version: str, run: Runner) -> dict[str, Any] | None:
-    """One request → one response; notifications → ``None``."""
-    method, id_, params = message.get("method"), message.get("id"), message.get("params") or {}
-    if method is None:
+def handle(message: object, *, version: str, run: Runner) -> dict[str, Any] | None:
+    """One request → one response; notifications → ``None``. Never raises: a
+    malformed message gets an error reply, and the server keeps serving."""
+    if not isinstance(message, dict):
+        return _error(None, -32600, "not a request object")
+    method, id_ = message.get("method"), message.get("id")
+    params = message.get("params")
+    if params is None:
+        params = {}
+    if not isinstance(method, str):
         return _error(id_, -32600, "not a request")
+    if not isinstance(params, dict):
+        return _error(id_, -32602, "params must be an object")
     if method.startswith("notifications/"):
         return None
     if method == "initialize":

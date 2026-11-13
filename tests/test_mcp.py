@@ -121,3 +121,28 @@ def test_stdio_server_end_to_end(tmp_path: Path):
     assert plan["issues"][0]["line"] == 1
     assert replies[2]["result"]["structuredContent"]["id"] == "too-many-params"
     assert replies[3]["error"]["code"] == -32700
+
+
+def test_handle_never_raises_on_malformed_input():
+    def boom(argv, cwd):  # pragma: no cover - must not be reached
+        raise AssertionError("the CLI must not run for malformed calls")
+
+    def call(name, arguments):
+        msg = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": name, "arguments": arguments},
+        }
+        return handle(msg, version="9", run=boom)["result"]
+
+    assert handle([], version="9", run=boom)["error"]["code"] == -32600
+    assert handle({"id": 1, "method": 5}, version="9", run=boom)["error"]["code"] == -32600
+    assert (
+        handle({"id": 1, "method": "ping", "params": []}, version="9", run=boom)["error"]["code"]
+        == -32602
+    )
+    assert "missing required argument 'ref'" in call("compare", {"path": "."})["content"][0]["text"]
+    assert "missing required argument 'action'" in call("baseline", {})["content"][0]["text"]
+    assert "action must be" in call("baseline", {"action": "wipe"})["content"][0]["text"]
+    assert "'top' must be an integer" in call("plan", {"top": "three"})["content"][0]["text"]
