@@ -6,7 +6,11 @@ import ast
 from collections.abc import Callable
 from pathlib import Path
 
-from spaghetti.checks.ast_per_file import ALL_CHECKS, check_magic_numbers
+from spaghetti.checks.ast_per_file import (
+    ALL_CHECKS,
+    check_magic_numbers,
+    check_swallowed_exceptions,
+)
 from spaghetti.checks.package_level import (
     check_duplicate_functions_pkg,
     check_import_cycles_pkg,
@@ -20,6 +24,7 @@ from spaghetti.models import Issue
 __all__ = [
     "ALL_CHECKS",
     "SOURCE_CHECKS",
+    "SOURCE_AWARE_CHECKS",
     "PACKAGE_CHECKS",
     "check_duplicate_functions_pkg",
     "check_magic_numbers",
@@ -29,11 +34,18 @@ __all__ = [
 ]
 
 SourceCheck = Callable[[str, Path, str], list[Issue]]
+SourceAwareCheck = Callable[[ast.Module, str, Path, str], list[Issue]]
+"""AST checks that also need the raw source (comments, literal spelling)."""
 PackageCheck = Callable[[str, list[tuple[Path, ast.Module]]], list[Issue]]
 
 SOURCE_CHECKS: list[SourceCheck] = [
     check_long_file,
     check_todo_markers,
+]
+
+SOURCE_AWARE_CHECKS: list[SourceAwareCheck] = [
+    check_swallowed_exceptions,
+    check_magic_numbers,
 ]
 
 PACKAGE_CHECKS: list[PackageCheck] = [

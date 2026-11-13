@@ -15,6 +15,7 @@ from spaghetti.ast_helpers import (
     _loc,
     _walk_with_class_context,
 )
+from spaghetti.config import DUNDER_RE as _DUNDER_RE
 from spaghetti.models import Issue, _display_path
 
 __all__ = [
@@ -43,18 +44,35 @@ def _module_and_package_for(pkg_name: str, filepath: Path) -> tuple[str, str]:
     return module, ".".join(parts[:-1])
 
 
-def _import_targets(package: str, node: ast.ImportFrom) -> list[str]:
-    """Resolves an ImportFrom to the dotted module name(s) it depends on."""
+def _import_targets(
+    package: str, node: ast.ImportFrom, modules: dict[str, Path] | None = None
+) -> list[str]:
+    """Resolves an ImportFrom to the dotted module name(s) it depends on.
+
+    ``from pkg import name`` binds the *submodule* ``pkg.name`` when one
+    exists, so with ``modules`` (the package's known module names) the edge
+    points at that submodule rather than at ``pkg``'s ``__init__`` — the
+    ubiquitous ``__init__`` re-export pattern is then not a cycle.
+    """
     if node.level == 0:
-        return [node.module] if node.module else []
-    pkg_parts = package.split(".") if package else []
-    up = node.level - 1
-    if up:
-        pkg_parts = pkg_parts[: len(pkg_parts) - up] if up <= len(pkg_parts) else []
-    base = ".".join(pkg_parts)
-    if node.module:
-        return [f"{base}.{node.module}" if base else node.module]
-    return [f"{base}.{alias.name}" if base else alias.name for alias in node.names]
+        base = node.module or ""
+    else:
+        pkg_parts = package.split(".") if package else []
+        up = node.level - 1
+        if up:
+            pkg_parts = pkg_parts[: len(pkg_parts) - up] if up <= len(pkg_parts) else []
+        base = ".".join(pkg_parts)
+        if node.module:
+            base = f"{base}.{node.module}" if base else node.module
+    if not base:
+        return [alias.name for alias in node.names]
+    if modules is None:
+        return [base]
+    targets: list[str] = []
+    for alias in node.names:
+        candidate = f"{base}.{alias.name}"
+        targets.append(candidate if candidate in modules else base)
+    return sorted(set(targets))
 
 
 def _package_prefix(pkg_name: str) -> str:
@@ -78,11 +96,21 @@ def _is_type_checking_guard(node: ast.If) -> bool:
     return isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING"
 
 
+def _is_main_guard(node: ast.If) -> bool:
+    """``if __name__ == "__main__":`` — never executes when the module is imported."""
+    test = node.test
+    return (
+        isinstance(test, ast.Compare)
+        and isinstance(test.left, ast.Name)
+        and test.left.id == "__name__"
+    )
+
+
 def _module_level_imports(tree: ast.Module) -> list[ast.Import | ast.ImportFrom]:
     """Imports that actually execute at module-import time.
 
-    Excludes imports nested inside a function/method body and
-    ``if TYPE_CHECKING:`` blocks.
+    Excludes imports nested inside a function/method body, ``if TYPE_CHECKING:``
+    blocks, and ``if __name__ == "__main__":`` blocks.
     """
     found: list[ast.Import | ast.ImportFrom] = []
 
@@ -90,7 +118,9 @@ def _module_level_imports(tree: ast.Module) -> list[ast.Import | ast.ImportFrom]
         for child in ast.iter_child_nodes(node):
             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
                 continue
-            if isinstance(child, ast.If) and _is_type_checking_guard(child):
+            if isinstance(child, ast.If) and (
+                _is_type_checking_guard(child) or _is_main_guard(child)
+            ):
                 continue
             if isinstance(child, (ast.Import, ast.ImportFrom)):
                 found.append(child)
@@ -121,12 +151,14 @@ def _build_import_graph(
         return graph, file_for_module
     stem = prefix.rstrip(".")
 
+    modules = {_module_and_package_for(pkg_name, fp)[0]: fp for fp, _ in files}
+    file_for_module.update(modules)
+
     for filepath, tree in files:
         module, package = _module_and_package_for(pkg_name, filepath)
-        file_for_module[module] = filepath
         for node in _module_level_imports(tree):
             if isinstance(node, ast.ImportFrom):
-                for resolved in _import_targets(package, node):
+                for resolved in _import_targets(package, node, modules):
                     if resolved and (resolved == stem or resolved.startswith(stem + ".")):
                         graph[module].add(resolved)
             elif isinstance(node, ast.Import):
@@ -256,6 +288,8 @@ def check_duplicate_functions_pkg(
                 continue
             if _line_count(node) < min_lines or _is_trivial_body(node):
                 continue
+            if _DUNDER_RE.match(node.name):
+                continue  # ``__repr__``/``__eq__`` across sibling classes are protocol hooks
             groups[_dump_stmts(node.body)].append((filepath, node))
 
     issues: list[Issue] = []

@@ -243,14 +243,23 @@ def test_check_excessive_params_flags_many_params():
     assert issues[0].rule == "too-many-params"
 
 
-def test_check_excessive_params_includes_kwargs():
-    source = (
-        "def func(a: int, b: int, c: int, d: int, e: int, f: int, "
-        "*args: int, **kwargs: int) -> None:\n"
-        "    pass\n"
-    )
+def test_check_excessive_params_counts_required_positional_only():
+    # Seven required positionals: flagged. *args/**kwargs don't count.
+    source = "def func(a, b, c, d, e, f, g, *args, **kwargs) -> None:\n    pass\n"
     issues = check_excessive_params(_parse(source), Path("f.py"), "pkg")
     assert len(issues) == 1
+    assert "7 required positional" in issues[0].message
+
+
+def test_check_excessive_params_ignores_options_and_self():
+    # Defaulted and keyword-only parameters are options, not positional
+    # confusion; self/cls never count. Public APIs with many options pass.
+    source = (
+        "class C:\n"
+        "    def m(self, a, b, c=1, d=2, e=3, f=4, *, g=5, h=6, i=7) -> None:\n"
+        "        pass\n"
+    )
+    assert check_excessive_params(_parse(source), Path("f.py"), "pkg") == []
 
 
 def test_check_excessive_params_clean():
@@ -383,20 +392,29 @@ def test_check_unused_imports_skips_future():
 
 def test_check_swallowed_flags_pass():
     source = "def f():\n    try:\n        pass\n    except Exception:\n        pass\n"
-    issues = check_swallowed_exceptions(_parse(source), Path("f.py"), "pkg")
+    issues = check_swallowed_exceptions(_parse(source), source, Path("f.py"), "pkg")
     assert len(issues) == 1
     assert issues[0].rule == "swallowed-exception"
 
 
+def test_check_swallowed_allows_commented_handler():
+    # A comment on the handler documents the decision (EAFP fallback).
+    source = (
+        "def f():\n    try:\n        pass\n"
+        "    except KeyError:\n        pass  # optional key, default applies\n"
+    )
+    assert check_swallowed_exceptions(_parse(source), source, Path("f.py"), "pkg") == []
+
+
 def test_check_swallowed_flags_ellipsis():
     source = "def f():\n    try:\n        pass\n    except Exception:\n        ...\n"
-    issues = check_swallowed_exceptions(_parse(source), Path("f.py"), "pkg")
+    issues = check_swallowed_exceptions(_parse(source), source, Path("f.py"), "pkg")
     assert len(issues) == 1
 
 
 def test_check_swallowed_allows_log():
     source = "def f():\n    try:\n        pass\n    except Exception as e:\n        print(e)\n"
-    issues = check_swallowed_exceptions(_parse(source), Path("f.py"), "pkg")
+    issues = check_swallowed_exceptions(_parse(source), source, Path("f.py"), "pkg")
     assert issues == []
 
 
@@ -952,14 +970,19 @@ def test_check_star_imports_clean():
 
 
 def test_check_global_mutations_flags_list():
-    source = "MY_LIST = [1, 2, 3]\n"
+    source = "registry = [1, 2, 3]\n"
     issues = check_global_mutations(_parse(source), Path("f.py"), "pkg")
     assert len(issues) == 1
     assert issues[0].rule == "global-mutable"
 
 
+def test_check_global_mutations_skips_upper_case_constants():
+    source = "KNOWN_NAMES = {'a', 'b'}\nTABLE = {'a': 1}\n"
+    assert check_global_mutations(_parse(source), Path("f.py"), "pkg") == []
+
+
 def test_check_global_mutations_flags_dict():
-    source = "MY_DICT = {'a': 1}\n"
+    source = "cache = {'a': 1}\n"
     issues = check_global_mutations(_parse(source), Path("f.py"), "pkg")
     assert len(issues) == 1
 
@@ -995,7 +1018,9 @@ def test_check_scope_mutations_flags_global_assign():
     assert issues[0].rule == "scope-mutation"
 
 
-def test_check_scope_mutations_flags_nonlocal():
+def test_check_scope_mutations_ignores_nonlocal_closure_accumulator():
+    # A closure updating its enclosing function's variable is scoped and
+    # idiomatic; only module-wide ``global`` mutation is the smell.
     source = (
         "def outer() -> None:\n"
         "    state = 0\n"
@@ -1003,10 +1028,7 @@ def test_check_scope_mutations_flags_nonlocal():
         "        nonlocal state\n"
         "        state += 1\n"
     )
-    issues = check_scope_mutations(_parse(source), Path("f.py"), "pkg")
-    assert len(issues) == 1
-    assert issues[0].rule == "scope-mutation"
-    assert "nonlocal" in issues[0].message
+    assert check_scope_mutations(_parse(source), Path("f.py"), "pkg") == []
 
 
 def test_check_scope_mutations_skips_read_only():
@@ -1698,12 +1720,17 @@ def test_check_lazy_class_allows_legacy_sqlalchemy_column():
     assert issues == []
 
 
-def test_check_lazy_class_still_flags_unrelated_base():
-    # Sanity check: the pydantic/dataclass exemption must not swallow
-    # genuine hits — an unrelated base class doesn't grant an exemption.
-    source = "class C(SomeOtherBase):\n    x = 1\n"
+def test_check_lazy_class_exempts_any_subclass_or_decorated_class():
+    # A base class or decorator supplies the purpose (marker type, config
+    # subclass, Protocol, TypedDict); the smell is a bare class holding one function.
+    source = "class C(SomeOtherBase):\n    x = 1\n\n@register\nclass D:\n    pass\n"
+    assert check_lazy_class(_parse(source), Path("f.py"), "pkg") == []
+
+
+def test_check_lazy_class_flags_bare_class_with_one_method():
+    source = "class Helper:\n    def run(self):\n        return 1\n"
     issues = check_lazy_class(_parse(source), Path("f.py"), "pkg")
-    assert len(issues) == 1
+    assert [i.rule for i in issues] == ["lazy-class"]
 
 
 def test_check_lazy_class_allows_builtin_exception_subclass():

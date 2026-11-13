@@ -61,40 +61,42 @@ Exit codes: 0 = clean, 1 = warnings present, 2 = errors present, under the defau
 
 ### 3.1 Per-File AST Checks (31 rules)
 
+Rules marked **(off)** ship disabled after the [precision audit](docs/precision.md) and are enabled per project via `[tool.spaghetti.rules]`.
+
 | Rule | Severity | Threshold | What It Catches |
 |------|----------|-----------|-----------------|
 | `long-function` | warning | >50 lines | Functions exceeding the line limit |
 | `high-complexity` | warning/error | >10 (warn), >15 (error) | McCabe cyclomatic complexity |
 | `missing-return-type` | warning | — | Public functions without return type annotation (skips `__init__` — its return type is implicitly `None`) |
 | `missing-param-type` | info | — | Public function parameters without type annotation (skips `self`/`cls`) |
-| `too-many-params` | warning | >6 params | Functions with excessive parameter counts |
+| `too-many-params` | warning | >6 required positional params | Functions a caller must feed too many positional arguments; defaulted and keyword-only options don't count |
 | `excessive-returns` | info | >3 return stmts | Functions with too many return paths |
-| `boolean-flag-params` | info | ≥3 boolean flags | Functions with combinatorial boolean parameters |
+| `boolean-flag-params` | info | ≥3 positional boolean flags | Functions with combinatorial positional boolean parameters (keyword-only flags don't count) |
 | `deep-nesting` | warning | >5 levels | Functions with deep if/for/while/with/try nesting |
 | `untyped-dict` | info | — | Bare `dict` in type hints without parameters |
-| `unused-import` | warning | — | Imported names never referenced (skips `__init__.py` — re-exports are legitimate) |
-| `swallowed-exception` | warning | — | `except: pass` or `except: ...` blocks |
+| `unused-import` **(off)** | warning | — | Imported names never referenced (skips `__init__.py` — re-exports are legitimate) |
+| `swallowed-exception` | warning | — | `except: pass` or `except: ...` blocks without a comment documenting the decision |
 | `duplicate-branch` | warning | — | if/else blocks with structurally identical bodies |
 | `encapsulation-violation` | info | — | Accessing private `_name` through non-self/cls |
 | `god-class` | warning/error | >25 methods (error >37), >20 attrs (error >30), or WMC >50 (error >75) | Classes with too many methods/attributes, or too much total complexity (WMC — sum of each method's own cyclomatic complexity) even if method/attribute counts alone stay under threshold |
 | `layer-violation` | error | — | Imports forbidden by architectural layer rules |
 | `transport-in-library` | error | — | Library packages importing transport frameworks |
-| `potential-circular-import` | warning | — | Child importing parent within same package |
+| `potential-circular-import` **(off)** | warning | — | Child importing parent within same package |
 | `god-module` | warning | — | Module exposing >15 public symbols |
 | `mutable-default` | warning | — | Functions with mutable default arguments |
 | `bare-except` | warning | — | `except:` without specific exception type |
-| `star-import` | warning | — | `from x import *` statements |
+| `star-import` **(off)** | warning | — | `from x import *` statements |
 | `global-mutable` | info | — | Module-level mutable state (list/dict/set assigned at module scope) |
-| `scope-mutation` | info | — | Functions that mutate outer-scope variables via `global`/`nonlocal` declarations |
+| `scope-mutation` | info | — | Functions that mutate module-level variables via a `global` declaration (`nonlocal` is scoped and not flagged) |
 | `dead-code` | warning | — | Statements unreachable after `return`/`raise`/`break`/`continue` |
 | `message-chain` | info | >3 depth | Method/attribute chains exceeding 3 sequential accesses |
 | `excessive-decorators` | info | >3 decorators | Functions or classes with more than 3 stacked decorators |
-| `magic-number` | info | — | Numeric literals other than 0, 1, -1 (`__init__` skipped) |
-| `magic-string` | info | ≥2 occurrences | The same string literal compared for equality in 2+ places — an ad-hoc category/status code |
-| `missing-else` | info | — | `if` blocks with 2+ statements but no `else`/`elif` |
-| `lazy-class` | info | <2 methods | Classes with 0 or 1 methods — prefer a plain function or `@dataclass` |
+| `magic-number` **(off)** | info | — | Numeric literals other than 0, 1, -1 (`__init__` skipped) |
+| `magic-string` **(off)** | info | ≥2 occurrences | The same string literal compared for equality in 2+ places — an ad-hoc category/status code |
+| `missing-else` **(off)** | info | — | `if` blocks with 2+ statements but no `else`/`elif` |
+| `lazy-class` | info | <2 methods | Bare classes (no base, keyword, or decorator) with 0 or 1 methods — prefer a plain function or `@dataclass` |
 | `deep-inheritance` | warning | ≥4 depth | Effective inheritance chain depth exceeding 4 levels |
-| `pass-through-method` | info | — | A method whose body is nothing but a delegating call (`return other.method(*args, **kwargs)`), with every argument forwarded unchanged |
+| `pass-through-method` **(off)** | info | — | A method whose body is nothing but a delegating call (`return other.method(*args, **kwargs)`), with every argument forwarded unchanged |
 
 ### 3.2 Per-File Source-Text Checks (2 rules)
 

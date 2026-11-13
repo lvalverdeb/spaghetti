@@ -130,15 +130,22 @@ def check_missing_types(tree: ast.Module, filepath: Path, pkg: str) -> list[Issu
 # ── Rule: Excessive Parameters ────────────────────────────────────────────────
 
 
+def _required_positional_params(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
+    """Parameters a caller must supply positionally: no default, not keyword-only,
+    not ``self``/``cls``. Keyword-only options and defaulted parameters are the
+    idiomatic way to offer many independent options and are not the
+    positional-confusion smell a Parameter Object addresses."""
+    positional = [*node.args.posonlyargs, *node.args.args]
+    n_defaults = len(node.args.defaults)
+    required = positional[: len(positional) - n_defaults] if n_defaults else positional
+    return [a.arg for a in required if a.arg not in ("self", "cls")]
+
+
 def check_excessive_params(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
     issues: list[Issue] = []
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            total = len(node.args.args) + len(node.args.kwonlyargs)
-            if node.args.vararg:
-                total += 1
-            if node.args.kwarg:
-                total += 1
+            total = len(_required_positional_params(node))
             if total > _cfg.MAX_FUNC_PARAMS:
                 issues.append(
                     Issue(
@@ -149,9 +156,9 @@ def check_excessive_params(tree: ast.Module, filepath: Path, pkg: str) -> list[I
                         rule="too-many-params",
                         package=pkg,
                         message=(
-                            f"{node.name}() has {total} params (max {_cfg.MAX_FUNC_PARAMS}) — "
-                            "consider a Parameter Object (a dataclass or Pydantic model "
-                            "bundling the related fields) instead"
+                            f"{node.name}() has {total} required positional params "
+                            f"(max {_cfg.MAX_FUNC_PARAMS}) — consider a Parameter Object "
+                            "(a dataclass or Pydantic model bundling the related fields) instead"
                         ),
                     )
                 )
@@ -190,8 +197,9 @@ def check_excessive_returns(tree: ast.Module, filepath: Path, pkg: str) -> list[
 
 
 def check_boolean_flag_params(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
-    """Several boolean-defaulted params on one function multiply the number of
-    behaviors it has to support (2^N combinations)."""
+    """Several positional boolean-defaulted params on one function multiply the
+    number of behaviors it has to support (2^N combinations) and read as
+    ``f(x, True, False)`` at call sites."""
     issues: list[Issue] = []
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -204,13 +212,8 @@ def check_boolean_flag_params(tree: ast.Module, filepath: Path, pkg: str) -> lis
             for arg, default in paired:
                 if isinstance(default, ast.Constant) and isinstance(default.value, bool):
                     flags.append(arg.arg)
-            for arg, default in zip(node.args.kwonlyargs, node.args.kw_defaults):
-                if (
-                    default is not None
-                    and isinstance(default, ast.Constant)
-                    and isinstance(default.value, bool)
-                ):
-                    flags.append(arg.arg)
+            # Keyword-only booleans are deliberately not counted: a caller has
+            # to name them, so ``f(True, False)`` call-site ambiguity can't occur.
             if len(flags) >= _cfg.MIN_BOOLEAN_FLAGS:
                 issues.append(
                     Issue(
@@ -329,6 +332,8 @@ def _collect_imported_names(tree: ast.Module) -> dict[str, int]:
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
+                if alias.asname == alias.name:
+                    continue  # ``import x as x``: explicit re-export
                 name = (alias.asname or alias.name).split(".")[0]
                 if name != "_":
                     imported[name] = node.lineno
@@ -338,10 +343,23 @@ def _collect_imported_names(tree: ast.Module) -> dict[str, int]:
             for alias in node.names:
                 if alias.name == "*":
                     continue
+                if alias.asname == alias.name:
+                    continue  # ``from x import A as A``: the explicit re-export idiom
                 name = alias.asname or alias.name
                 if name != "_":
                     imported[name] = node.lineno
     return imported
+
+
+def _names_in_string_annotation(text: str) -> set[str]:
+    """Names referenced by a forward-reference string, or nothing if it isn't one."""
+    if not text or len(text) > 200 or "\n" in text:
+        return set()
+    try:
+        expr = ast.parse(text, mode="eval")
+    except SyntaxError:
+        return set()
+    return {n.id for n in ast.walk(expr) if isinstance(n, ast.Name)}
 
 
 def _collect_used_names(tree: ast.Module) -> set[str]:
@@ -351,6 +369,9 @@ def _collect_used_names(tree: ast.Module) -> set[str]:
     for node in ast.walk(tree):
         if isinstance(node, ast.Name):
             used.add(node.id)
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            # A string annotation ("Console", "list[Foo]") references names too.
+            used.update(_names_in_string_annotation(node.value))
         elif (
             isinstance(node, ast.Assign)
             and any(isinstance(t, ast.Name) and t.id == "__all__" for t in node.targets)
@@ -393,11 +414,32 @@ def check_unused_imports(tree: ast.Module, filepath: Path, pkg: str) -> list[Iss
 # ── Rule: Swallowed Exceptions ────────────────────────────────────────────────
 
 
-def check_swallowed_exceptions(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
-    """``except ...: pass`` (or ``...``) silently discards failures."""
+def _has_comment(source_lines: list[str], start: int, end: int | None) -> bool:
+    """True if any line in the 1-based inclusive range carries a ``#`` comment."""
+    end = end if end is not None else start
+    for line in source_lines[start - 1 : end]:
+        code = line.split("#", 1)
+        if len(code) == 2 and '"' not in code[0] and "'" not in code[0]:
+            return True
+    return False
+
+
+def check_swallowed_exceptions(
+    tree: ast.Module, source: str, filepath: Path, pkg: str
+) -> list[Issue]:
+    """``except ...: pass`` (or ``...``) silently discards failures.
+
+    A handler that carries a comment is treated as a documented decision
+    (EAFP fallback, optional dependency probe) and not flagged — the same
+    convention SonarQube uses for its empty-block rules. Source-aware for
+    that reason; registered in ``SOURCE_AWARE_CHECKS``.
+    """
+    source_lines = source.splitlines()
     issues: list[Issue] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.ExceptHandler):
+            continue
+        if _has_comment(source_lines, node.lineno, node.end_lineno):
             continue
         body = node.body
         is_pass_only = len(body) == 1 and isinstance(body[0], ast.Pass)
@@ -566,9 +608,21 @@ def check_encapsulation_violations(tree: ast.Module, filepath: Path, pkg: str) -
     """Reaching into another object's private (``_name``) attribute from outside
     self/cls/its own class."""
     issues: list[Issue] = []
+    own_private_attrs = {
+        cls.name: _self_attrs_assigned(
+            [n for n in cls.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+        )
+        for cls in ast.walk(tree)
+        if isinstance(cls, ast.ClassDef)
+    }
 
     for node, class_name, first_param_name in _walk_with_encapsulation_context(tree):
         direct_attr = _direct_private_access(node, class_name, first_param_name)
+        if direct_attr is not None and direct_attr in own_private_attrs.get(class_name, ()):
+            # ``other._x`` inside class C where C itself assigns ``self._x``:
+            # the same class reaching into another instance of itself
+            # (``__eq__``, ``merge``, ``copy``) is not an encapsulation break.
+            continue
         if direct_attr is not None:
             issues.append(
                 Issue(
@@ -1040,7 +1094,9 @@ def check_bare_except(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]
 
 
 def check_star_imports(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
-    """Detect ``from x import *``."""
+    """Detect ``from x import *``. ``__init__.py`` is skipped (re-exports)."""
+    if filepath.name == "__init__.py":
+        return []
     issues: list[Issue] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
@@ -1072,7 +1128,9 @@ def check_global_mutations(tree: ast.Module, filepath: Path, pkg: str) -> list[I
                 if isinstance(target, ast.Name) and isinstance(
                     node.value, (ast.List, ast.Dict, ast.Set)
                 ):
-                    if not target.id.startswith("_"):
+                    if not target.id.startswith("_") and not target.id.isupper():
+                        # UPPER_CASE names are constants by convention (lookup
+                        # tables, name sets) — not state anyone mutates.
                         issues.append(
                             Issue(
                                 file=filepath,
@@ -1142,10 +1200,12 @@ def _outer_scope_declarations(
     re-walk the scope per candidate to answer "global, nonlocal, or both?"."""
     declared_by: dict[str, set[str]] = defaultdict(set)
     for child in _walk_own_scope(func_node):
-        if isinstance(child, (ast.Global, ast.Nonlocal)):
-            keyword = "global" if isinstance(child, ast.Global) else "nonlocal"
+        # ``nonlocal`` is deliberately not counted: a closure updating its
+        # enclosing function's accumulator is scoped, idiomatic Python, not
+        # the module-wide shared state this rule exists to catch.
+        if isinstance(child, ast.Global):
             for name in child.names:
-                declared_by[name].add(keyword)
+                declared_by[name].add("global")
     return declared_by
 
 
@@ -1164,8 +1224,8 @@ def _assigned_outer_name(stmt: ast.AST, declared_by: dict[str, set[str]]) -> str
 
 
 def check_scope_mutations(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
-    """Detect functions that explicitly mutate outer-scope variables via
-    ``global`` or ``nonlocal`` declarations followed by assignments."""
+    """Detect functions that explicitly mutate module-level variables via a
+    ``global`` declaration followed by an assignment."""
     issues: list[Issue] = []
 
     for func_node in ast.walk(tree):
@@ -1214,6 +1274,10 @@ def check_scope_mutations(tree: ast.Module, filepath: Path, pkg: str) -> list[Is
 _CONTROL_FLOW_TERMINAL_STMT_TYPES = (ast.Return, ast.Raise, ast.Break, ast.Continue)
 
 
+def _is_bare_yield(stmt: ast.stmt) -> bool:
+    return isinstance(stmt, ast.Expr) and isinstance(stmt.value, (ast.Yield, ast.YieldFrom))
+
+
 def check_dead_code(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
     """Flag statements that are guaranteed unreachable because they follow
     ``return``, ``raise``, ``break``, or ``continue``."""
@@ -1226,6 +1290,8 @@ def check_dead_code(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
         for i, stmt in enumerate(body):
             if _unreachable_after(stmt):
                 for j in range(i + 1, len(body)):
+                    if _is_bare_yield(body[j]):
+                        continue  # ``raise ...; yield`` turns the function into a generator
                     issues.append(
                         Issue(
                             file=filepath,
@@ -1748,6 +1814,12 @@ def _lazy_class_is_exempt(node: ast.ClassDef) -> bool:
     """
     if _lazy_class_has_orm_columns(node):
         return True
+    if node.bases or node.keywords or node.decorator_list:
+        # Subclasses (exceptions, Protocols, TypedDicts, Pydantic models,
+        # marker types, ``class Config(Base)``) and decorated classes have a
+        # purpose their base/decorator supplies; the smell is a bare
+        # ``class X:`` that holds one function.
+        return True
     for base in node.bases:
         name = base.id if isinstance(base, ast.Name) else getattr(base, "attr", None)
         if name is None:
@@ -1783,6 +1855,13 @@ def check_lazy_class(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
                 )
             )
     return issues
+
+
+_EXCEPTION_NAME_SUFFIXES = ("Error", "Exception", "Warning")
+
+
+def _is_exception_type_name(name: str) -> bool:
+    return name in ("BaseException", "Exception") or name.endswith(_EXCEPTION_NAME_SUFFIXES)
 
 
 def _base_names(bases: list[ast.expr]) -> list[str]:
@@ -1823,6 +1902,8 @@ def check_deep_inheritance(tree: ast.Module, filepath: Path, pkg: str) -> list[I
             for other in classes_by_name.get(name, ()):
                 queue.extend(_base_names(other.bases))
         total_depth = len(seen)
+        if any(_is_exception_type_name(name) for name in seen):
+            continue  # exception hierarchies are deliberately deep taxonomies
         if total_depth >= _cfg.MAX_INHERITANCE_DEPTH:
             issues.append(
                 Issue(
@@ -2005,7 +2086,6 @@ ALL_CHECKS: list[FileCheck] = [
     check_deep_nesting,
     check_untyped_dicts,
     check_unused_imports,
-    check_swallowed_exceptions,
     check_duplicate_branches,
     check_encapsulation_violations,
     check_god_class,

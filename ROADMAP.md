@@ -119,6 +119,9 @@ This is the phase that gets spaghetti onto the shortlist.
   Publish the table in `docs/precision.md`. Fix or demote any rule under 80 % precision.
   Known candidates: `magic-number` on `match`/`case` pattern literals, `missing-else`,
   `boolean-flag-params` on well-known APIs.
+  *Done 2026-11-13 (Python):* strict precision was 12 % before calibration; three detector
+  bugs fixed, nine rules narrowed, seven demoted to off-by-default; corpus findings
+  2727 → 940. See `docs/precision.md`. Rust mirror pending.
 
 Acceptance: on each of the five corpus repos, `spaghetti --baseline` then a second run
 reports zero findings; `--diff-base` on a synthetic PR reports only in-diff findings;

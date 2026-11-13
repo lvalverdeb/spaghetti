@@ -477,7 +477,7 @@ def test_baseline_roundtrip_hides_known_and_reports_fixed(project: Path):
     baseline_path = project / ".spaghetti-baseline.json"
     assert baseline_path.exists()
     n = len(json.loads(baseline_path.read_text())["findings"])
-    assert n >= 5
+    assert n >= 4
 
     gated = _run_cli(project, "--json")
     assert gated.returncode == 0  # everything is baselined
@@ -512,7 +512,7 @@ def test_diff_base_restricts_to_changed_lines(project: Path):
     assert {i["rule"] for i in report["issues"]} == {"missing-return-type", "too-many-params"}
     assert all(i["message"].startswith("g()") for i in report["issues"])
     assert report["diff_base"]["ref"] == "HEAD"
-    assert report["diff_base"]["hidden"] >= 5
+    assert report["diff_base"]["hidden"] >= 3
     assert "Changed lines only (vs HEAD)" in _run_cli(project, "--diff-base", "HEAD", "-q").stdout
 
 

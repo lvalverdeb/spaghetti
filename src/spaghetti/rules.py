@@ -3,6 +3,11 @@
 This is the single source of truth for rule metadata consumed by SARIF output,
 settings validation (``[tool.spaghetti.rules]``) and, later, generated docs.
 Thresholds live in :mod:`spaghetti.config`; this module only describes.
+
+``enabled_by_default=False`` marks rules that exist and can be switched on via
+``[tool.spaghetti.rules]`` but ship off: the 2026-11 precision audit over five
+public codebases (see ``docs/precision.md``) found them at or near zero
+precision, or Ruff already owns them (``unused-import``, ``star-import``).
 """
 
 from __future__ import annotations
@@ -46,29 +51,44 @@ _RULES: tuple[RuleMeta, ...] = (
     _r("boolean-flag-params", "Function with several boolean flag parameters", "info"),
     _r("deep-nesting", "Control flow nested too deeply", "warning"),
     _r("untyped-dict", "Bare dict in a type hint", "info"),
-    _r("unused-import", "Imported name never referenced", "warning"),
+    _r("unused-import", "Imported name never referenced", "warning", enabled_by_default=False),
     _r("swallowed-exception", "except block that silently discards the exception", "warning"),
     _r("duplicate-branch", "if/else branches with identical bodies", "warning"),
     _r("encapsulation-violation", "Private attribute accessed from outside its owner", "info"),
     _r("god-class", "Class with too many methods, attributes, or total complexity", "warning"),
     _r("layer-violation", "Import forbidden by the configured layer rules", "error"),
     _r("transport-in-library", "Library package imports a transport framework", "error"),
-    _r("potential-circular-import", "Child module imports its parent package", "warning"),
+    _r(
+        "potential-circular-import",
+        "Child module imports its parent package",
+        "warning",
+        enabled_by_default=False,
+    ),
     _r("god-module", "Module exposes too many public symbols", "warning"),
     _r("mutable-default", "Mutable default argument", "warning"),
     _r("bare-except", "except: without an exception type", "warning"),
-    _r("star-import", "from x import *", "warning"),
+    _r("star-import", "from x import *", "warning", enabled_by_default=False),
     _r("global-mutable", "Mutable state assigned at module scope", "info"),
     _r("scope-mutation", "Function mutates outer scope via global/nonlocal", "info"),
     _r("dead-code", "Statement unreachable after return/raise/break/continue", "warning"),
     _r("message-chain", "Attribute or call chain deeper than the limit", "info"),
     _r("excessive-decorators", "Too many stacked decorators", "info"),
-    _r("magic-number", "Unexplained numeric literal", "info"),
-    _r("magic-string", "Same string literal compared for equality in several places", "info"),
-    _r("missing-else", "Multi-statement if without else", "info"),
+    _r("magic-number", "Unexplained numeric literal", "info", enabled_by_default=False),
+    _r(
+        "magic-string",
+        "Same string literal compared for equality in several places",
+        "info",
+        enabled_by_default=False,
+    ),
+    _r("missing-else", "Multi-statement if without else", "info", enabled_by_default=False),
     _r("lazy-class", "Class with fewer than two methods", "info"),
     _r("deep-inheritance", "Inheritance chain deeper than the limit", "warning"),
-    _r("pass-through-method", "Method whose body only delegates with unchanged arguments", "info"),
+    _r(
+        "pass-through-method",
+        "Method whose body only delegates with unchanged arguments",
+        "info",
+        enabled_by_default=False,
+    ),
     _r(
         "low-cohesion",
         "Class whose methods split into unrelated groups (LCOM4)",

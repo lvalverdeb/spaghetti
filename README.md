@@ -226,7 +226,7 @@ The detector checks **40 rules** across four tiers:
 
 **Per-package cross-file checks (5 rules):** `import-cycle`, `high-coupling` (a module with both high fan-in and high fan-out), `orphan-interface` (an abstract class with exactly one implementation), `duplicate-function-body`, `sync-async-duplication`.
 
-A `low-cohesion` (LCOM4) check also exists in the codebase but is intentionally not enabled by default — see the rule's own docstring for why.
+**Off by default** (switch on with `[tool.spaghetti.rules]`): `magic-number`, `magic-string`, `missing-else`, `pass-through-method`, `potential-circular-import`, `unused-import`, `star-import`, and `low-cohesion` (LCOM4). The first five scored at or near zero precision in the [2026-11 audit over five public codebases](docs/precision.md); the next two are Ruff's territory (F401/F403). The audit also documents why `too-many-params` counts only required positional parameters, why `lazy-class` exempts every subclass, and the other calibrations.
 
 See [SDD.md](SDD.md) for the full rule catalog, thresholds, and scoring formula.
 

@@ -33,12 +33,13 @@ from typing import Any
 
 import spaghetti.config as _cfg
 from spaghetti.ast_helpers import _file_line_count
-from spaghetti.checks import ALL_CHECKS, PACKAGE_CHECKS, SOURCE_CHECKS, check_magic_numbers
+from spaghetti.checks import ALL_CHECKS, PACKAGE_CHECKS, SOURCE_AWARE_CHECKS, SOURCE_CHECKS
 from spaghetti.checks.package_level import (
     check_duplicate_functions_pkg,
     check_sync_async_twins_pkg,
 )
 from spaghetti.models import Issue, ScanConfig, ScanResult
+from spaghetti.rules import DEFAULT_RULE_IDS, RULE_CATALOG
 from spaghetti.suppression import _is_suppressed
 
 # Empty until cli.main() sets it (either via discover_cwd_packages or
@@ -106,7 +107,8 @@ def _scan_one_file(
     )
     for check_fn in ALL_CHECKS:
         result.issues.extend(check_fn(tree, py_file, pkg_name))
-    result.issues.extend(check_magic_numbers(tree, source, py_file, pkg_name))
+    for source_aware_check in SOURCE_AWARE_CHECKS:
+        result.issues.extend(source_aware_check(tree, source, py_file, pkg_name))
     return source, tree
 
 
@@ -154,18 +156,20 @@ def _assign_fingerprints(issues: list[Issue], pkg_path: Path) -> None:
 
 
 def _apply_rule_overrides(issues: list[Issue]) -> list[Issue]:
-    """Honour ``[tool.spaghetti.rules]``: drop rules set to ``off``, rewrite
+    """Honour the catalog's ``enabled_by_default`` and ``[tool.spaghetti.rules]``:
+    drop rules that ship off unless opted in, drop rules set to ``off``, rewrite
     the severity of the rest. Runs before fingerprinting so a severity change
     doesn't alter a finding's identity (the fingerprint ignores severity)."""
     overrides = _cfg.RULE_OVERRIDES
-    if not overrides:
-        return issues
     kept: list[Issue] = []
     for issue in issues:
         setting = overrides.get(issue.rule)
         if setting == "off":
             continue
-        if setting is not None:
+        if setting is None:
+            if issue.rule in RULE_CATALOG and issue.rule not in DEFAULT_RULE_IDS:
+                continue  # ships off; the user has to opt in
+        else:
             issue.severity = setting  # type: ignore[assignment]
         kept.append(issue)
     return kept
