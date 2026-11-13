@@ -18,23 +18,6 @@ def _nesting_depth(node: ast.AST, current: int = 0) -> int:
     return max_depth
 
 
-def _cyclomatic_complexity(node: ast.AST) -> int:
-    """Approximate McCabe cyclomatic complexity."""
-    complexity = 1
-    for child in ast.walk(node):
-        if isinstance(child, (ast.If, ast.While, ast.For, ast.AsyncFor)):
-            complexity += 1
-        elif isinstance(child, ast.BoolOp):
-            complexity += len(child.values) - 1
-        elif isinstance(child, ast.ExceptHandler):
-            complexity += 1
-        elif isinstance(child, ast.Assert):
-            complexity += 1
-        elif isinstance(child, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
-            complexity += 1
-    return complexity
-
-
 def _loc(node: ast.AST) -> dict[str, int | None]:
     """``Issue`` location kwargs for ``node``: 1-based start column and the end
     position. Columns are raw ``ast`` byte offsets at this point;

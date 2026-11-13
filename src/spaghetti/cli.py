@@ -12,6 +12,7 @@ from pathlib import Path
 
 import yaml
 
+import spaghetti.config as _cfg
 from spaghetti.baseline import (
     BaselineEntry,
     BaselineError,
@@ -527,25 +528,25 @@ def _exit_code(issues: list[Issue], fail_on: str) -> int:
 def main() -> int:
     parser = _build_arg_parser()
     args = parser.parse_args()
-    from spaghetti.scanner import review_packages_concurrently
+    from spaghetti.scanner import review_packages_concurrently, scan_workspace
 
     settings = _load_run_settings(args, parser)
     overrides = apply_settings(settings)
     run_exclude, non_recursive = _resolve_registry(args, parser, settings)
     min_severity = _SEVERITY_ORDER[args.severity]
 
+    config = ScanConfig(
+        exclude=run_exclude,
+        min_duplicate_lines=args.min_duplicate_lines,
+        twin_similarity=args.twin_similarity,
+        min_clone_tokens=_cfg.MIN_CLONE_TOKENS,
+    )
     per_package: dict[str, ScanResult] = asyncio.run(
         review_packages_concurrently(
-            args.packages,
-            config=ScanConfig(
-                exclude=run_exclude,
-                min_duplicate_lines=args.min_duplicate_lines,
-                twin_similarity=args.twin_similarity,
-            ),
-            non_recursive=non_recursive,
-            overrides=overrides,
+            args.packages, config=config, non_recursive=non_recursive, overrides=overrides
         )
     )
+    scan_workspace(per_package, config=config)
 
     total_result = ScanResult()
     for pkg_name in args.packages:
@@ -605,6 +606,11 @@ def _package_json(result: ScanResult) -> dict[str, object]:
         "errors": result.error_count,
         "warnings": result.warning_count,
         "infos": result.info_count,
+        "maintainability_index": (
+            round(result.maintainability_index, 1)
+            if result.maintainability_index is not None
+            else None
+        ),
     }
 
 

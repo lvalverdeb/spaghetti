@@ -10,7 +10,6 @@ from pathlib import Path
 import spaghetti.config as _cfg
 from spaghetti.ast_helpers import (
     _count_nested_returns,
-    _cyclomatic_complexity,
     _dump_stmts,
     _has_return_type_hint,
     _is_private,
@@ -22,6 +21,7 @@ from spaghetti.ast_helpers import (
     _param_has_type_hint,
 )
 from spaghetti.config import DUNDER_RE as _DUNDER_RE
+from spaghetti.metrics import cognitive_complexity, cyclomatic_complexity
 from spaghetti.models import Issue, Severity
 
 __all__ = ["ALL_CHECKS"]
@@ -67,7 +67,7 @@ def check_complexity(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
     issues: list[Issue] = []
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            cc = _cyclomatic_complexity(node)
+            cc = cyclomatic_complexity(node)
             if cc > _cfg.COMPLEXITY_THRESHOLD:
                 issues.append(
                     Issue(
@@ -85,6 +85,57 @@ def check_complexity(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
                     )
                 )
     return issues
+
+
+def check_cognitive_complexity(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
+    """Sonar cognitive complexity: how hard a function is to *read*, dominated by
+    nesting. Cyclomatic is what CI gates on; this is what reviews argue about."""
+    issues: list[Issue] = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            score = cognitive_complexity(node)
+            if score > _cfg.COGNITIVE_COMPLEXITY_THRESHOLD:
+                limit = _cfg.COGNITIVE_COMPLEXITY_THRESHOLD
+                issues.append(
+                    Issue(
+                        file=filepath,
+                        line=node.lineno,
+                        **_loc(node),
+                        severity=(
+                            "error"
+                            if score > limit * _cfg.ERROR_ESCALATION_MULTIPLIER
+                            else "warning"
+                        ),
+                        rule="high-cognitive-complexity",
+                        package=pkg,
+                        message=(
+                            f"{node.name}() has cognitive complexity {score} (max {limit}) — "
+                            "flatten nesting: return early, extract the inner loop or "
+                            "branch into a named function"
+                        ),
+                    )
+                )
+    return issues
+
+
+def low_maintainability_issue(mi: float, filepath: Path, pkg: str) -> list[Issue]:
+    """One finding when a file's Maintainability Index (computed once by the
+    detector, which also reports it per package) is under the threshold."""
+    if mi >= _cfg.MIN_MAINTAINABILITY_INDEX:
+        return []
+    return [
+        Issue(
+            file=filepath,
+            line=1,
+            severity="warning",
+            rule="low-maintainability",
+            package=pkg,
+            message=(
+                f"Maintainability Index {mi:.1f} (min {_cfg.MIN_MAINTAINABILITY_INDEX}) — "
+                "a large, dense, uncommented module; split it along its responsibilities"
+            ),
+        )
+    ]
 
 
 # ── Rule: Missing Type Hints ──────────────────────────────────────────────────
@@ -331,24 +382,26 @@ def _collect_imported_names(tree: ast.Module) -> dict[str, int]:
     imported: dict[str, int] = {}
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            for alias in node.names:
-                if alias.asname == alias.name:
-                    continue  # ``import x as x``: explicit re-export
-                name = (alias.asname or alias.name).split(".")[0]
-                if name != "_":
-                    imported[name] = node.lineno
-        elif isinstance(node, ast.ImportFrom):
-            if node.module == "__future__":
-                continue
-            for alias in node.names:
-                if alias.name == "*":
-                    continue
-                if alias.asname == alias.name:
-                    continue  # ``from x import A as A``: the explicit re-export idiom
-                name = alias.asname or alias.name
-                if name != "_":
-                    imported[name] = node.lineno
+            bound = (_bound_name(alias, split_dotted=True) for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module != "__future__":
+            bound = (_bound_name(alias, split_dotted=False) for alias in node.names)
+        else:
+            continue
+        for name in bound:
+            if name is not None:
+                imported[name] = node.lineno
     return imported
+
+
+def _bound_name(alias: ast.alias, *, split_dotted: bool) -> str | None:
+    """The local name an import alias binds, or ``None`` when it binds nothing
+    worth tracking: ``*``, the ``_`` sink, and the ``X as X`` re-export idiom."""
+    if alias.name == "*" or alias.asname == alias.name:
+        return None
+    name = alias.asname or alias.name
+    if split_dotted:
+        name = name.split(".")[0]
+    return None if name == "_" else name
 
 
 def _names_in_string_annotation(text: str) -> set[str]:
@@ -695,7 +748,7 @@ def check_god_class(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
             continue
         methods = [n for n in node.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
         attrs = _self_attrs_assigned(methods)
-        wmc = sum(_cyclomatic_complexity(method) for method in methods)
+        wmc = sum(cyclomatic_complexity(method) for method in methods)
         severity = _god_class_severity(len(methods), len(attrs), wmc)
         if severity is not None:
             issues.append(
@@ -928,43 +981,48 @@ def check_layer_violations(tree: ast.Module, filepath: Path, pkg: str) -> list[I
     if pkg_root is None:
         return []
 
-    issues: list[Issue] = []
     rel_path = str(filepath.relative_to(pkg_root))
-
-    for pattern, forbidden_prefixes in rules.items():
-        if not rel_path.startswith(pattern):
-            continue
-        for node in ast.walk(tree):
-            if isinstance(node, (ast.Import, ast.ImportFrom)):
-                imported = ""
-                if isinstance(node, ast.ImportFrom) and node.module:
-                    imported = node.module
-                elif isinstance(node, ast.Import):
-                    for alias in node.names:
-                        imported = alias.name
-                        break
-
-                for prefix in forbidden_prefixes:
-                    if imported.startswith(prefix):
-                        issues.append(
-                            Issue(
-                                file=filepath,
-                                line=node.lineno,
-                                **_loc(node),
-                                severity="error",
-                                rule="layer-violation",
-                                package=pkg,
-                                message=(
-                                    f"Module '{rel_path}' imports '{imported}' — forbidden by "
-                                    "layer rules; depend on an abstraction (e.g. a "
-                                    "typing.Protocol) the lower layer implements, injected as "
-                                    "a constructor/function parameter instead of imported "
-                                    "directly (Dependency Inversion Principle / Dependency "
-                                    "Injection)"
-                                ),
-                            )
-                        )
+    forbidden = [
+        prefix
+        for pattern, prefixes in rules.items()
+        if rel_path.startswith(pattern)
+        for prefix in prefixes
+    ]
+    if not forbidden:
+        return []
+    issues: list[Issue] = []
+    for node in ast.walk(tree):
+        imported = _imported_module(node)
+        for prefix in forbidden:
+            if imported is not None and imported.startswith(prefix):
+                issues.append(
+                    Issue(
+                        file=filepath,
+                        line=node.lineno,  # type: ignore[attr-defined]
+                        **_loc(node),
+                        severity="error",
+                        rule="layer-violation",
+                        package=pkg,
+                        message=(
+                            f"Module '{rel_path}' imports '{imported}' — forbidden by "
+                            "layer rules; depend on an abstraction (e.g. a "
+                            "typing.Protocol) the lower layer implements, injected as "
+                            "a constructor/function parameter instead of imported "
+                            "directly (Dependency Inversion Principle / Dependency "
+                            "Injection)"
+                        ),
+                    )
+                )
     return issues
+
+
+def _imported_module(node: ast.AST) -> str | None:
+    """The module an import statement names (first alias for ``import a, b``)."""
+    if isinstance(node, ast.ImportFrom):
+        return node.module or ""
+    if isinstance(node, ast.Import):
+        return node.names[0].name if node.names else ""
+    return None
 
 
 # ── Rule: Transport in Library ────────────────────────────────────────────────
@@ -1281,45 +1339,42 @@ def _is_bare_yield(stmt: ast.stmt) -> bool:
 def check_dead_code(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
     """Flag statements that are guaranteed unreachable because they follow
     ``return``, ``raise``, ``break``, or ``continue``."""
-    issues: list[Issue] = []
+    return [
+        Issue(
+            file=filepath,
+            line=stmt.lineno,
+            severity="warning",
+            rule="dead-code",
+            package=pkg,
+            message="statement is unreachable — previous line always terminates",
+        )
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        for block in _function_blocks(node)
+        for stmt in _unreachable_statements(block)
+    ]
 
-    def _unreachable_after(stmt: ast.stmt) -> bool:
-        return isinstance(stmt, _CONTROL_FLOW_TERMINAL_STMT_TYPES)
 
-    def _scan_body(body: list[ast.stmt]) -> None:
-        for i, stmt in enumerate(body):
-            if _unreachable_after(stmt):
-                for j in range(i + 1, len(body)):
-                    if _is_bare_yield(body[j]):
-                        continue  # ``raise ...; yield`` turns the function into a generator
-                    issues.append(
-                        Issue(
-                            file=filepath,
-                            line=getattr(body[j], "lineno", stmt.lineno),
-                            severity="warning",
-                            rule="dead-code",
-                            package=pkg,
-                            message="statement is unreachable — previous line always terminates",
-                        )
-                    )
-                break
-
-    def _scan_stmt(stmt: ast.stmt) -> None:
+def _function_blocks(func: ast.FunctionDef | ast.AsyncFunctionDef) -> Iterator[list[ast.stmt]]:
+    """The function body plus the body/else/except blocks of its top-level statements."""
+    yield func.body
+    for stmt in func.body:
         for attr in ("body", "orelse"):
             block = getattr(stmt, attr, None)
             if block:
-                _scan_body(block)
+                yield block
         if isinstance(stmt, ast.Try):
             for handler in stmt.handlers:
-                _scan_body(handler.body)
+                yield handler.body
 
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            _scan_body(node.body)
-            for stmt in node.body:
-                _scan_stmt(stmt)
 
-    return issues
+def _unreachable_statements(body: list[ast.stmt]) -> list[ast.stmt]:
+    """Statements after the first ``return``/``raise``/``break``/``continue``,
+    except a bare ``yield`` (``raise ...; yield`` makes a generator on purpose)."""
+    for i, stmt in enumerate(body):
+        if isinstance(stmt, _CONTROL_FLOW_TERMINAL_STMT_TYPES):
+            return [s for s in body[i + 1 :] if not _is_bare_yield(s)]
+    return []
 
 
 def _chain_root_name(node: ast.expr) -> str | None:
@@ -2079,6 +2134,7 @@ def check_pass_through_methods(tree: ast.Module, filepath: Path, pkg: str) -> li
 ALL_CHECKS: list[FileCheck] = [
     check_long_functions,
     check_complexity,
+    check_cognitive_complexity,
     check_missing_types,
     check_excessive_params,
     check_excessive_returns,

@@ -13,8 +13,6 @@ from spaghetti.checks.ast_per_file import (
 )
 from spaghetti.checks.package_level import (
     check_duplicate_functions_pkg,
-    check_import_cycles_pkg,
-    check_module_coupling_pkg,
     check_orphan_interfaces_pkg,
     check_sync_async_twins_pkg,
 )
@@ -28,7 +26,6 @@ __all__ = [
     "PACKAGE_CHECKS",
     "check_duplicate_functions_pkg",
     "check_magic_numbers",
-    "check_module_coupling_pkg",
     "check_orphan_interfaces_pkg",
     "check_sync_async_twins_pkg",
 ]
@@ -49,7 +46,7 @@ SOURCE_AWARE_CHECKS: list[SourceAwareCheck] = [
 ]
 
 PACKAGE_CHECKS: list[PackageCheck] = [
-    check_import_cycles_pkg,
-    check_module_coupling_pkg,
     check_orphan_interfaces_pkg,
 ]
+"""Import cycles, coupling and clones run over every package at once — see
+``spaghetti.checks.workspace_level`` and ``detector.scan_workspace``."""

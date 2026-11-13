@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from spaghetti.checks.workspace_level import RawImport
+    from spaghetti.clones import TokenStream
 
 Severity = Literal["info", "warning", "error"]
 
@@ -61,6 +65,7 @@ class ScanConfig:
     min_duplicate_lines: int
     twin_similarity: float
     recursive: bool = True
+    min_clone_tokens: int = 50
 
 
 @dataclass
@@ -78,6 +83,13 @@ class ScanResult:
     or ``None`` if the marker didn't give one.
     """
 
+    file_mi: dict[Path, float] = field(default_factory=dict)
+    """Maintainability Index per parsed file (see ``metrics.maintainability_index``)."""
+    raw_imports: dict[Path, list[RawImport]] = field(default_factory=dict)
+    """Transport from worker to parent for the workspace-level import graph; cleared after use."""
+    token_streams: dict[Path, TokenStream] = field(default_factory=dict)
+    """Transport from worker to parent for clone detection; cleared after use."""
+
     def extend(self, other: ScanResult) -> None:
         """Fold ``other`` into this result (the all-packages total)."""
         self.issues.extend(other.issues)
@@ -86,6 +98,14 @@ class ScanResult:
         self.total_lines += other.total_lines
         self.suppressed += other.suppressed
         self.ignored.extend(other.ignored)
+        self.file_mi.update(other.file_mi)
+
+    @property
+    def maintainability_index(self) -> float | None:
+        """Mean MI over parsed files, or ``None`` when nothing parsed."""
+        if not self.file_mi:
+            return None
+        return sum(self.file_mi.values()) / len(self.file_mi)
 
     @property
     def error_count(self) -> int:

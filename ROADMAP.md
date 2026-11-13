@@ -157,6 +157,14 @@ complexity matches SonarCloud on a 50-function hand-checked sample; the clone de
 finds a variable-renamed copy of a 20-line function that the current detector misses;
 a two-package import cycle in the test fixtures is reported.
 
+*Status 2026-11-13 (Python):* all five items landed; version 2.0.0 (D3 break, no legacy
+flag). `radon cc` agreement 3211/3211 corpus functions; MI within 2 points of `radon mi`
+on 250/255 files (Halstead and complexity exact, logical-line counting approximated);
+cognitive complexity implemented from the Sonar specification with spec-example tests —
+the SonarCloud sample check is not possible offline and remains open; `duplicate-code`
+finds renamed copies (tests/test_clones.py) and ships at `info` (see docs/precision.md);
+two-package cycle covered by tests/test_workspace.py. Rust mirror pending.
+
 ### Phase 3 — Trend, history and hotspots (≈ 3–4 weeks)
 
 This is where CodeScene lives, and it is the most valuable thing the pure linters do

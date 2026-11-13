@@ -51,6 +51,13 @@ MAX_NESTING_DEPTH = 5
 LONG_FUNCTION_FLAT_NESTING_MAX = 2
 MAX_CROSS_LAYER_IMPORTS = 0
 COMPLEXITY_THRESHOLD = 10
+# Sonar's default for its cognitive-complexity rule.
+COGNITIVE_COMPLEXITY_THRESHOLD = 15
+# Smallest normalised-token window reported as a clone (see spaghetti.clones).
+MIN_CLONE_TOKENS = 50
+# Files whose Maintainability Index is below this are flagged; 10 is the
+# Radon rank-C boundary ("low maintainability").
+MIN_MAINTAINABILITY_INDEX = 10
 MAX_CLASS_METHODS = 25
 MAX_CLASS_ATTRS = 20
 MIN_BOOLEAN_FLAGS = 3

@@ -17,10 +17,11 @@ from spaghetti.checks.ast_per_file import (
     check_star_imports,
     check_unused_imports,
 )
-from spaghetti.checks.package_level import (
-    _build_import_graph,
-    check_duplicate_functions_pkg,
-    check_import_cycles_pkg,
+from spaghetti.checks.package_level import check_duplicate_functions_pkg
+from spaghetti.checks.workspace_level import (
+    build_import_graph,
+    check_import_cycles_ws,
+    collect_raw_imports,
 )
 from spaghetti.models import Issue, ScanConfig
 from spaghetti.rules import DEFAULT_RULE_IDS, RULE_CATALOG
@@ -74,6 +75,11 @@ def _pkg(
     return "pkg", sorted(parsed, key=lambda t: t[0])
 
 
+def _cycles(name: str, files: list[tuple[Path, ast.Module]]):
+    graph, index = build_import_graph({name: {fp: collect_raw_imports(t) for fp, t in files}})
+    return graph, check_import_cycles_ws(graph, index)
+
+
 def test_main_guard_imports_do_not_create_cycles(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     name, files = _pkg(
         tmp_path,
@@ -86,7 +92,7 @@ def test_main_guard_imports_do_not_create_cycles(tmp_path: Path, monkeypatch: py
             ),
         },
     )
-    assert check_import_cycles_pkg(name, files) == []
+    assert _cycles(name, files)[1] == []
 
 
 def test_init_reexport_of_submodules_is_not_a_cycle(
@@ -103,9 +109,9 @@ def test_init_reexport_of_submodules_is_not_a_cycle(
             "b.py": "class B: ...\n",
         },
     )
-    graph, _ = _build_import_graph(name, files)
+    graph, issues = _cycles(name, files)
     assert graph["pkg.a"] == {"pkg.b"}
-    assert check_import_cycles_pkg(name, files) == []
+    assert issues == []
 
 
 def test_real_cycle_is_still_reported(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -114,7 +120,7 @@ def test_real_cycle_is_still_reported(tmp_path: Path, monkeypatch: pytest.Monkey
         monkeypatch,
         {"__init__.py": "", "a.py": "from .b import B\n", "b.py": "from .a import A\n"},
     )
-    assert [i.rule for i in check_import_cycles_pkg(name, files)] == ["import-cycle"]
+    assert [i.rule for i in _cycles(name, files)[1]] == ["import-cycle"]
 
 
 # ── narrowed rules ───────────────────────────────────────────────────────────

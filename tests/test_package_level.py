@@ -1,4 +1,5 @@
-"""Tests for the cross-file (package-level) checks in spaghetti.checks.package_level."""
+"""Tests for the cross-file checks: package-level (spaghetti.checks.package_level) and
+the single-package behaviour of the workspace-level graph checks."""
 
 from __future__ import annotations
 
@@ -6,61 +7,17 @@ import ast
 from pathlib import Path
 
 from spaghetti import detector as ds
-from spaghetti.checks.package_level import check_import_cycles_pkg, check_module_coupling_pkg
+from spaghetti.checks.workspace_level import (
+    build_import_graph,
+    check_import_cycles_ws,
+    check_module_coupling_ws,
+    collect_raw_imports,
+)
 from spaghetti.config import MAX_MODULE_FAN_IN
 
-# ── Cross-File: Import Cycles ───────────────────────────────────────────────
-
-
-def test_check_import_cycles_pkg_detects_cycle(tmp_path: Path):
-    pkg_dir = tmp_path / "cycle_pkg"
-    pkg_dir.mkdir()
-    (pkg_dir / "__init__.py").write_text("")
-    (pkg_dir / "a.py").write_text("from .b import something\n")
-    (pkg_dir / "b.py").write_text("from .a import something_else\n")
-    pkg_name = "cycle_pkg"
-
-    files = []
-    for py_file in sorted(pkg_dir.rglob("*.py")):
-        source = py_file.read_text()
-        tree = ast.parse(source, filename=str(py_file))
-        files.append((py_file, tree))
-
-    original_packages = ds.PACKAGES
-    ds.PACKAGES = {pkg_name: pkg_dir}
-    try:
-        issues = check_import_cycles_pkg(pkg_name, files)
-        assert len(issues) >= 1
-        assert issues[0].rule == "import-cycle"
-        assert issues[0].severity == "error"
-    finally:
-        ds.PACKAGES = original_packages
-
-
-def test_check_import_cycles_pkg_clean(tmp_path: Path):
-    pkg_dir = tmp_path / "clean_pkg"
-    pkg_dir.mkdir()
-    (pkg_dir / "__init__.py").write_text("")
-    (pkg_dir / "a.py").write_text("x = 1\n")
-    (pkg_dir / "b.py").write_text("from .a import x\n")
-    pkg_name = "clean_pkg"
-
-    files = []
-    for py_file in sorted(pkg_dir.rglob("*.py")):
-        source = py_file.read_text()
-        tree = ast.parse(source, filename=str(py_file))
-        files.append((py_file, tree))
-
-    original_packages = ds.PACKAGES
-    ds.PACKAGES = {pkg_name: pkg_dir}
-    try:
-        issues = check_import_cycles_pkg(pkg_name, files)
-        assert issues == []
-    finally:
-        ds.PACKAGES = original_packages
-
-
-# ── Cross-File: Module Coupling ─────────────────────────────────────────────
+# ── Cross-File: Import Cycles and Module Coupling ───────────────────────────
+# These run over the whole workspace since Phase 2; see tests/test_workspace.py
+# for the multi-package cases. The single-package behaviour is pinned here.
 
 
 def _files_for_pkg(pkg_dir: Path) -> list[tuple[Path, ast.Module]]:
@@ -72,11 +29,38 @@ def _files_for_pkg(pkg_dir: Path) -> list[tuple[Path, ast.Module]]:
     return files
 
 
-def test_check_module_coupling_pkg_flags_hub_module(tmp_path: Path):
+def _graph_for(pkg_name: str, pkg_dir: Path, monkeypatch):
+    monkeypatch.setattr(ds, "PACKAGES", {pkg_name: pkg_dir})
+    raw = {fp: collect_raw_imports(tree) for fp, tree in _files_for_pkg(pkg_dir)}
+    return build_import_graph({pkg_name: raw})
+
+
+def test_import_cycle_detected(tmp_path: Path, monkeypatch):
+    pkg_dir = tmp_path / "cycle_pkg"
+    pkg_dir.mkdir()
+    (pkg_dir / "__init__.py").write_text("")
+    (pkg_dir / "a.py").write_text("from .b import something\n")
+    (pkg_dir / "b.py").write_text("from .a import something_else\n")
+    issues = check_import_cycles_ws(*_graph_for("cycle_pkg", pkg_dir, monkeypatch))
+    assert len(issues) >= 1
+    assert issues[0].rule == "import-cycle"
+    assert issues[0].severity == "error"
+    assert issues[0].package == "cycle_pkg"
+
+
+def test_import_cycle_clean(tmp_path: Path, monkeypatch):
+    pkg_dir = tmp_path / "clean_pkg"
+    pkg_dir.mkdir()
+    (pkg_dir / "__init__.py").write_text("")
+    (pkg_dir / "a.py").write_text("x = 1\n")
+    (pkg_dir / "b.py").write_text("from .a import x\n")
+    assert check_import_cycles_ws(*_graph_for("clean_pkg", pkg_dir, monkeypatch)) == []
+
+
+def test_module_coupling_flags_hub_module(tmp_path: Path, monkeypatch):
     pkg_dir = tmp_path / "hub_pkg"
     pkg_dir.mkdir()
     (pkg_dir / "__init__.py").write_text("")
-
     n = MAX_MODULE_FAN_IN + 1  # also > MAX_MODULE_FAN_OUT since both are equal
     for i in range(n):
         (pkg_dir / f"dep{i}.py").write_text("x = 1\n")
@@ -85,61 +69,22 @@ def test_check_module_coupling_pkg_flags_hub_module(tmp_path: Path):
     )
     for i in range(n):
         (pkg_dir / f"user{i}.py").write_text("from .hub import hub\n")
-
-    pkg_name = "hub_pkg"
-    files = _files_for_pkg(pkg_dir)
-
-    original_packages = ds.PACKAGES
-    ds.PACKAGES = {pkg_name: pkg_dir}
-    try:
-        issues = check_module_coupling_pkg(pkg_name, files)
-        assert len(issues) == 1
-        assert issues[0].rule == "high-coupling"
-        assert f"{pkg_name}.hub" in issues[0].message
-    finally:
-        ds.PACKAGES = original_packages
+    issues = check_module_coupling_ws(*_graph_for("hub_pkg", pkg_dir, monkeypatch))
+    assert len(issues) == 1
+    assert issues[0].rule == "high-coupling"
+    assert "hub_pkg.hub" in issues[0].message
 
 
-def test_check_module_coupling_pkg_allows_high_fan_in_alone(tmp_path: Path):
-    # Sanity check: fan-in alone (a legitimately central util everyone
-    # imports) must not trigger — only both fan-in AND fan-out high does.
+def test_module_coupling_allows_high_fan_in_alone(tmp_path: Path, monkeypatch):
+    # Fan-in alone (a legitimately central util everyone imports) must not
+    # trigger — only both fan-in AND fan-out high does.
     pkg_dir = tmp_path / "util_pkg"
     pkg_dir.mkdir()
     (pkg_dir / "__init__.py").write_text("")
     (pkg_dir / "util.py").write_text("x = 1\n")
-    n = MAX_MODULE_FAN_IN + 1
-    for i in range(n):
+    for i in range(MAX_MODULE_FAN_IN + 1):
         (pkg_dir / f"user{i}.py").write_text("from .util import x\n")
-
-    pkg_name = "util_pkg"
-    files = _files_for_pkg(pkg_dir)
-
-    original_packages = ds.PACKAGES
-    ds.PACKAGES = {pkg_name: pkg_dir}
-    try:
-        issues = check_module_coupling_pkg(pkg_name, files)
-        assert issues == []
-    finally:
-        ds.PACKAGES = original_packages
-
-
-def test_check_module_coupling_pkg_clean(tmp_path: Path):
-    pkg_dir = tmp_path / "clean_pkg"
-    pkg_dir.mkdir()
-    (pkg_dir / "__init__.py").write_text("")
-    (pkg_dir / "a.py").write_text("x = 1\n")
-    (pkg_dir / "b.py").write_text("from .a import x\n")
-
-    pkg_name = "clean_pkg"
-    files = _files_for_pkg(pkg_dir)
-
-    original_packages = ds.PACKAGES
-    ds.PACKAGES = {pkg_name: pkg_dir}
-    try:
-        issues = check_module_coupling_pkg(pkg_name, files)
-        assert issues == []
-    finally:
-        ds.PACKAGES = original_packages
+    assert check_module_coupling_ws(*_graph_for("util_pkg", pkg_dir, monkeypatch)) == []
 
 
 # ── Cross-File: Duplicate Function Bodies ────────────────────────────────────

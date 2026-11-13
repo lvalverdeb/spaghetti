@@ -34,10 +34,20 @@ from typing import Any
 import spaghetti.config as _cfg
 from spaghetti.ast_helpers import _file_line_count
 from spaghetti.checks import ALL_CHECKS, PACKAGE_CHECKS, SOURCE_AWARE_CHECKS, SOURCE_CHECKS
+from spaghetti.checks.ast_per_file import low_maintainability_issue
 from spaghetti.checks.package_level import (
     check_duplicate_functions_pkg,
     check_sync_async_twins_pkg,
 )
+from spaghetti.checks.workspace_level import (
+    build_import_graph,
+    check_duplicate_code_ws,
+    check_import_cycles_ws,
+    check_module_coupling_ws,
+    collect_raw_imports,
+)
+from spaghetti.clones import token_stream
+from spaghetti.metrics import maintainability_index
 from spaghetti.models import Issue, ScanConfig, ScanResult
 from spaghetti.rules import DEFAULT_RULE_IDS, RULE_CATALOG
 from spaghetti.suppression import _is_suppressed
@@ -109,6 +119,11 @@ def _scan_one_file(
         result.issues.extend(check_fn(tree, py_file, pkg_name))
     for source_aware_check in SOURCE_AWARE_CHECKS:
         result.issues.extend(source_aware_check(tree, source, py_file, pkg_name))
+    mi = maintainability_index(tree, source)
+    result.file_mi[py_file] = mi
+    result.issues.extend(low_maintainability_issue(mi, py_file, pkg_name))
+    result.raw_imports[py_file] = collect_raw_imports(tree)
+    result.token_streams[py_file] = token_stream(tree)
     return source, tree
 
 
@@ -212,12 +227,56 @@ def scan_package(pkg_name: str, pkg_path: Path, *, config: ScanConfig) -> ScanRe
     )
     result.issues.extend(check_sync_async_twins_pkg(pkg_name, parsed_files, config.twin_similarity))
 
+    _finalize(result, pkg_path, source_lines_by_file)
+    return result
+
+
+def _finalize(
+    result: ScanResult, pkg_path: Path, source_lines_by_file: dict[Path, list[str]]
+) -> None:
+    """Rule overrides, character columns, fingerprints, inline suppressions —
+    in that order, for every issue in ``result``."""
     result.issues = _apply_rule_overrides(result.issues)
     for issue in result.issues:
         _normalize_columns(issue, source_lines_by_file.get(issue.file))
     _assign_fingerprints(result.issues, pkg_path)
     _apply_suppressions(result, source_lines_by_file)
-    return result
+
+
+def scan_workspace(per_package: dict[str, ScanResult], *, config: ScanConfig) -> None:
+    """Run the checks that need every package at once — import cycles and
+    coupling over the union graph, token-based clones — and fold their
+    findings into each owning package's result. Consumes the per-file
+    transport data the workers collected."""
+    imports = {name: r.raw_imports for name, r in per_package.items()}
+    streams = {name: r.token_streams for name, r in per_package.items()}
+    graph, index = build_import_graph(imports)
+    found = [
+        *check_import_cycles_ws(graph, index),
+        *check_module_coupling_ws(graph, index),
+        *check_duplicate_code_ws(streams, config.min_clone_tokens),
+    ]
+    lines_cache: dict[Path, list[str]] = {}
+
+    def lines_of(path: Path) -> list[str]:
+        if path not in lines_cache:
+            try:
+                lines_cache[path] = path.read_text(encoding="utf-8", errors="replace").splitlines()
+            except OSError:
+                lines_cache[path] = []
+        return lines_cache[path]
+
+    for pkg_name, result in per_package.items():
+        own = [i for i in found if i.package == pkg_name]
+        result.raw_imports = {}
+        result.token_streams = {}
+        if not own:
+            continue
+        staging = ScanResult(issues=own)
+        _finalize(staging, PACKAGES[pkg_name], {i.file: lines_of(i.file) for i in own})
+        result.issues.extend(staging.issues)
+        result.suppressed += staging.suppressed
+        result.ignored.extend(staging.ignored)
 
 
 def _init_worker(worker_packages: dict[str, Path], overrides: dict[str, Any] | None = None) -> None:

@@ -17,7 +17,7 @@ from typing import Literal
 
 from spaghetti.models import Severity
 
-Tier = Literal["ast", "text", "infra", "package"]
+Tier = Literal["ast", "text", "infra", "package", "workspace"]
 
 
 @dataclass(frozen=True)
@@ -43,7 +43,9 @@ def _r(
 _RULES: tuple[RuleMeta, ...] = (
     # ── per-file AST ──
     _r("long-function", "Function exceeds the line limit", "warning"),
-    _r("high-complexity", "Cyclomatic complexity above threshold", "warning"),
+    _r("high-complexity", "Cyclomatic complexity (McCabe, Radon-exact) above threshold", "warning"),
+    _r("high-cognitive-complexity", "Cognitive complexity (Sonar) above threshold", "warning"),
+    _r("low-maintainability", "Maintainability Index below threshold", "warning", "text"),
     _r("missing-return-type", "Public function without a return type annotation", "warning"),
     _r("missing-param-type", "Public function parameter without a type annotation", "info"),
     _r("too-many-params", "Function with too many parameters", "warning"),
@@ -102,8 +104,14 @@ _RULES: tuple[RuleMeta, ...] = (
     _r("syntax-error", "File failed to parse", "error", "infra"),
     _r("unreadable-file", "File could not be read", "error", "infra"),
     # ── per-package cross-file ──
-    _r("import-cycle", "Circular import between modules", "error", "package"),
-    _r("high-coupling", "Module with both high fan-in and high fan-out", "warning", "package"),
+    _r("import-cycle", "Circular import between modules", "error", "workspace"),
+    _r("high-coupling", "Module with both high fan-in and high fan-out", "warning", "workspace"),
+    _r(
+        "duplicate-code",
+        "Duplicated token sequence (type-2 clone) across files",
+        "info",
+        "workspace",
+    ),
     _r("orphan-interface", "Abstract class with exactly one implementation", "info", "package"),
     _r("duplicate-function-body", "Identical function bodies across files", "warning", "package"),
     _r(

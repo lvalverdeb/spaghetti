@@ -150,10 +150,12 @@ fields may be added without a version bump, never removed or retyped.
 {
   "schema_version": 1,
   "summary": { "grade": "B", "score": 82.5, "files": 32, "lines": 6000, "functions": 410,
-               "issues": 17, "errors": 2, "warnings": 11, "infos": 4 },
+               "issues": 17, "errors": 2, "warnings": 11, "infos": 4,
+               "maintainability_index": 64.2 },
   "packages": {
     "my-lib": { "grade": "A", "score": 92.1, "files": 14, "lines": 2800, "functions": 190,
-                "issues": 5, "errors": 0, "warnings": 3, "infos": 2 }
+                "issues": 5, "errors": 0, "warnings": 3, "infos": 2,
+                "maintainability_index": 71.0 }
   },
   "issues": [
     {
@@ -216,17 +218,21 @@ The plan groups issues by rule, counts affected files, and lists a recommended f
 
 ## Rules
 
-The detector checks **40 rules** across four tiers:
+The detector checks **43 rules** across five tiers:
 
-**Per-file AST checks (31 rules):** `long-function`, `high-complexity`, `missing-return-type`, `missing-param-type`, `too-many-params`, `excessive-returns`, `boolean-flag-params`, `deep-nesting`, `untyped-dict`, `unused-import`, `swallowed-exception`, `duplicate-branch`, `encapsulation-violation`, `god-class` (also factors in WMC — total cyclomatic complexity summed across a class's methods — alongside method/attribute counts), `layer-violation`, `transport-in-library`, `potential-circular-import`, `god-module`, `mutable-default`, `bare-except`, `star-import`, `global-mutable`, `scope-mutation`, `dead-code`, `message-chain`, `excessive-decorators`, `magic-number`, `magic-string`, `missing-else`, `lazy-class`, `deep-inheritance`, `pass-through-method`.
+**Per-file AST checks (32 rules):** `long-function`, `high-complexity` (McCabe cyclomatic complexity, identical to `radon cc`), `high-cognitive-complexity` (SonarSource cognitive complexity, default 15), `missing-return-type`, `missing-param-type`, `too-many-params`, `excessive-returns`, `boolean-flag-params`, `deep-nesting`, `untyped-dict`, `unused-import`, `swallowed-exception`, `duplicate-branch`, `encapsulation-violation`, `god-class` (also factors in WMC — total cyclomatic complexity summed across a class's methods — alongside method/attribute counts), `layer-violation`, `transport-in-library`, `potential-circular-import`, `god-module`, `mutable-default`, `bare-except`, `star-import`, `global-mutable`, `scope-mutation`, `dead-code`, `message-chain`, `excessive-decorators`, `magic-number`, `magic-string`, `missing-else`, `lazy-class`, `deep-inheritance`, `pass-through-method`.
 
-**Per-file source-text checks (2 rules):** `long-file`, `todo-marker`.
+**Per-file source-text checks (3 rules):** `long-file`, `todo-marker`, `low-maintainability` (SEI/Radon Maintainability Index under 10; the per-package mean is also reported as `maintainability_index`).
 
 **Infrastructure checks (2 rules):** `syntax-error` (files that fail `ast.parse()`), `unreadable-file` (files that cannot be read at all — broken symlink, permission denied).
 
-**Per-package cross-file checks (5 rules):** `import-cycle`, `high-coupling` (a module with both high fan-in and high fan-out), `orphan-interface` (an abstract class with exactly one implementation), `duplicate-function-body`, `sync-async-duplication`.
+**Per-package cross-file checks (3 rules):** `orphan-interface` (an abstract class with exactly one implementation), `duplicate-function-body`, `sync-async-duplication`.
+
+**Workspace checks (3 rules), run once over every registered package:** `import-cycle` and `high-coupling` on the union import graph, so a cycle between two packages is found; `duplicate-code`, a PMD-CPD-style type-2 clone detector over a normalised AST token stream that finds copies with renamed variables (default window 50 tokens, `min-clone-tokens`). Duplication ships at `info`: it is a density signal, and mature libraries carry deliberate copies (sync/async twins).
 
 **Off by default** (switch on with `[tool.spaghetti.rules]`): `magic-number`, `magic-string`, `missing-else`, `pass-through-method`, `potential-circular-import`, `unused-import`, `star-import`, and `low-cohesion` (LCOM4). The first five scored at or near zero precision in the [2026-11 audit over five public codebases](docs/precision.md); the next two are Ruff's territory (F401/F403). The audit also documents why `too-many-params` counts only required positional parameters, why `lazy-class` exempts every subclass, and the other calibrations.
+
+**2.0 metric break.** Cyclomatic complexity is now McCabe-exact (Radon's rules: `match` arms, ternaries, comprehension clauses, `try/else`, no `with`). Scores and `high-complexity`/`god-class` findings shift accordingly; regenerate baselines when upgrading from 1.x. Agreement with `radon cc` is 3211/3211 functions on the audit corpus (see [docs/precision.md](docs/precision.md)).
 
 See [SDD.md](SDD.md) for the full rule catalog, thresholds, and scoring formula.
 

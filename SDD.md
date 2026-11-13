@@ -21,14 +21,15 @@ The spaghetti detector is a workspace-level quality gate. It scans Python packag
    ┌───────────────┐                    ┌──────────────────┐
     │  Per-File     │                    │  Per-Package     │
     │  AST Checks   │                    │  Cross-File      │
-    │  (31 rules)   │                    │  Checks (5 rules)│
+    │  (32 rules)   │                    │  Checks (3 rules)│
    └───────┬───────┘                    └────────┬─────────┘
            │                                     │
            ▼                                     ▼
    ┌───────────────┐                    ┌──────────────────┐
-   │  Source-Text  │                    │  Import Graph    │
-   │  Checks (2)   │                    │  DFS Cycle       │
-   └───────────────┘                    └──────────────────┘
+   │  Source-Text  │                    │  Workspace (3)   │
+   │  Checks (3)   │                    │  union import    │
+   └───────────────┘                    │  graph, clones   │
+                                        └──────────────────┘
            │
            ▼
    ┌───────────────┐
@@ -40,7 +41,11 @@ The spaghetti detector is a workspace-level quality gate. It scans Python packag
 
 ### 2.1 Concurrency Model
 
-Each package is scanned in its own worker process (`concurrent.futures.ProcessPoolExecutor`); `review_packages_concurrently` gathers the futures with `asyncio.gather`. Workers receive the parent's package registry and applied settings through the pool initializer. Results are aggregated into a single `ScanResult` and rendered as text, JSON (schema v1), or SARIF 2.1.0.
+Each package is scanned in its own worker process (`concurrent.futures.ProcessPoolExecutor`); `review_packages_concurrently` gathers the futures with `asyncio.gather`. Workers receive the parent's package registry and applied settings through the pool initializer. Each worker also returns two lightweight transports per parsed file — its raw module-level import statements and its normalised AST token stream — which `detector.scan_workspace` consumes in the parent to run the workspace tier (`checks/workspace_level.py`): import cycles and coupling over the union graph of every package, and clone groups (`spaghetti.clones`). Workspace findings are attributed to the owning package and go through the same override/column/fingerprint/suppression pipeline. Results are aggregated into a single `ScanResult` and rendered as text, JSON (schema v1), or SARIF 2.1.0.
+
+### 2.1.2 Metrics
+
+`spaghetti.metrics` holds the published metric definitions, each pure and port-independent: cyclomatic complexity reproduces `radon cc` exactly (verified on 3211 corpus functions), cognitive complexity follows SonarSource's 2018 specification (structural increments with nesting penalty for `if`/ternary/`match`/loops/`except`, hybrid increments for `elif`/`else`, +1 per boolean-operator sequence and per direct recursive call, nesting through nested functions and lambdas), Halstead volume and the module cyclomatic total follow Radon's visitors, and the Maintainability Index uses the SEI formula with Radon's normalisation (within 2 points of `radon mi` on 250/255 corpus files; the remaining gap is logical-line counting).
 
 ### 2.1.1 Settings and gating
 
@@ -59,14 +64,15 @@ Exit codes: 0 = clean, 1 = warnings present, 2 = errors present, under the defau
 
 ## 3. Rule Catalog
 
-### 3.1 Per-File AST Checks (31 rules)
+### 3.1 Per-File AST Checks (32 rules)
 
 Rules marked **(off)** ship disabled after the [precision audit](docs/precision.md) and are enabled per project via `[tool.spaghetti.rules]`.
 
 | Rule | Severity | Threshold | What It Catches |
 |------|----------|-----------|-----------------|
 | `long-function` | warning | >50 lines | Functions exceeding the line limit |
-| `high-complexity` | warning/error | >10 (warn), >15 (error) | McCabe cyclomatic complexity |
+| `high-complexity` | warning/error | >10 (warn), >15 (error) | McCabe cyclomatic complexity, counted exactly as `radon cc` (nested defs are separate units) |
+| `high-cognitive-complexity` | warning/error | >15 (warn), >22 (error) | SonarSource cognitive complexity — nesting-weighted readability cost |
 | `missing-return-type` | warning | — | Public functions without return type annotation (skips `__init__` — its return type is implicitly `None`) |
 | `missing-param-type` | info | — | Public function parameters without type annotation (skips `self`/`cls`) |
 | `too-many-params` | warning | >6 required positional params | Functions a caller must feed too many positional arguments; defaulted and keyword-only options don't count |
@@ -98,12 +104,13 @@ Rules marked **(off)** ship disabled after the [precision audit](docs/precision.
 | `deep-inheritance` | warning | ≥4 depth | Effective inheritance chain depth exceeding 4 levels |
 | `pass-through-method` **(off)** | info | — | A method whose body is nothing but a delegating call (`return other.method(*args, **kwargs)`), with every argument forwarded unchanged |
 
-### 3.2 Per-File Source-Text Checks (2 rules)
+### 3.2 Per-File Source-Text Checks (3 rules)
 
 | Rule | Severity | Threshold | What It Catches |
 |------|----------|-----------|-----------------|
 | `long-file` | warning | >400 lines | Files exceeding the line limit |
 | `todo-marker` | info | — | TODO/FIXME/XXX/HACK comments |
+| `low-maintainability` | warning | MI <10 | Maintainability Index (SEI/Radon) in Radon's rank C — a large, dense, uncommented module |
 
 ### 3.3 Infrastructure Checks (2 rules)
 
@@ -114,17 +121,25 @@ Rules marked **(off)** ship disabled after the [precision audit](docs/precision.
 
 > `unreadable-file` is emitted before anything else for that file; the file still counts toward `files_scanned` but contributes no lines and no other findings. `syntax-error` is emitted before any `ALL_CHECKS` run. When a file has a syntax error, no other AST rules are applied to it.
 
-### 3.4 Per-Package Cross-File Checks (5 rules)
+### 3.4 Per-Package Cross-File Checks (3 rules)
 
 | Rule | Severity | Threshold | What It Catches |
 |------|----------|-----------|-----------------|
-| `import-cycle` | error | — | Real circular import cycles (DFS on full import graph) |
-| `high-coupling` | warning | fan-in >8 **and** fan-out >8 | A module that's both heavily depended-on and heavily dependent — an overloaded "hub". Reuses `import-cycle`'s own import graph; flags only when both directions exceed threshold, since either alone is often a legitimately central util or a legitimately thin orchestrator |
 | `orphan-interface` | info | exactly 1 implementation | An abstract class with exactly one concrete implementation — Speculative Generality: the abstraction adds mental overhead without providing polymorphic value |
 | `duplicate-function-body` | warning | ≥5 identical lines | Byte-for-byte identical function bodies across files |
 | `sync-async-duplication` | warning | ≥60% text similarity | Sync/async twin pairs (e.g. `load`/`aload`) |
 
-> A sixth cross-file metric, `low-cohesion` (LCOM4 — Lack of Cohesion in Methods), is implemented and tested but intentionally **not enabled by default** — not part of `PACKAGE_CHECKS`. Direct-field-sharing LCOM4 can't distinguish genuine low cohesion from this codebase's dominant style of small, parameter-passing private methods with minimal shared instance state, without transitive call-graph reachability analysis it doesn't have. See `check_low_cohesion`'s own docstring in `checks/ast_per_file.py` for the full reasoning and the six false-positive categories it already excludes (classmethods/staticmethods, dataclass/Pydantic/exception value objects, pure pass-throughs, ABC/Protocol interfaces, method-call vs. field-access, and a stateful-method-fraction threshold).
+### 3.4.1 Workspace Checks (3 rules)
+
+Run once in the parent over every registered package (`detector.scan_workspace`).
+
+| Rule | Severity | Threshold | What It Catches |
+|------|----------|-----------|-----------------|
+| `import-cycle` | error | — | Real circular import cycles (DFS on the union import graph of all packages; a cycle spanning two packages is reported once, on the package where it was entered). Imports under `if TYPE_CHECKING:` and `if __name__ == "__main__":` are not edges; `from pkg import name` resolves to the submodule when one exists |
+| `high-coupling` | warning | fan-in >8 **and** fan-out >8 | A module that's both heavily depended-on and heavily dependent — an overloaded "hub". Flags only when both directions exceed threshold, since either alone is often a legitimately central util or a legitimately thin orchestrator |
+| `duplicate-code` | info | ≥50 normalised tokens (`min-clone-tokens`) | Type-2 clones: a window of the AST token stream (identifiers → `ID`, literals → `LIT`) that recurs anywhere in the workspace, extended to its maximal length. Overlapping sites in one file are merged into one region; each side of a clone gets a finding listing the others. Periodic windows (tables) are skipped |
+
+> A further cross-file metric, `low-cohesion` (LCOM4 — Lack of Cohesion in Methods), is implemented and tested but intentionally **not enabled by default** — not part of `PACKAGE_CHECKS`. Direct-field-sharing LCOM4 can't distinguish genuine low cohesion from this codebase's dominant style of small, parameter-passing private methods with minimal shared instance state, without transitive call-graph reachability analysis it doesn't have. See `check_low_cohesion`'s own docstring in `checks/ast_per_file.py` for the full reasoning and the six false-positive categories it already excludes (classmethods/staticmethods, dataclass/Pydantic/exception value objects, pure pass-throughs, ABC/Protocol interfaces, method-call vs. field-access, and a stateful-method-fraction threshold).
 
 ### 3.5 Canonical AST Patterns for Tangled Code Detection
 
@@ -315,6 +330,8 @@ packages:
   "suppressed": 5
 }
 ```
+
+Since 2.0 every package entry (and `summary`) also carries `maintainability_index`: the mean Maintainability Index over the package's parsed files, or `null` when nothing parsed. Schema v1 is additive, so this needs no version bump.
 
 ### Remediation Plan (`--plan`)
 

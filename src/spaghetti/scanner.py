@@ -5,6 +5,10 @@ can monkeypatch PACKAGES and scan_package via
 ``from spaghetti import detector as ds``.
 """
 
-from spaghetti.detector import review_packages_concurrently, scan_package  # noqa: F401
+from spaghetti.detector import (  # noqa: F401
+    review_packages_concurrently,
+    scan_package,
+    scan_workspace,
+)
 
-__all__ = ["scan_package", "review_packages_concurrently"]
+__all__ = ["scan_package", "review_packages_concurrently", "scan_workspace"]

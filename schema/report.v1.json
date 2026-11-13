@@ -198,6 +198,15 @@
         "infos": {
           "type": "integer",
           "minimum": 0
+        },
+        "maintainability_index": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Mean SEI/Radon Maintainability Index over parsed files (added in 2.0); null when no file parsed."
         }
       }
     },

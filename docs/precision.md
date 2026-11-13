@@ -166,3 +166,40 @@ changes below; 0 for a rule now off by default.
 - The corpus is five well-maintained libraries. On a codebase that actually has structural
   problems the TP rate of the kept rules will be higher; the point of the audit is the FP
   floor, not the TP ceiling.
+
+## Addendum: Phase 2 rules (2026-11-13)
+
+Phase 2 added three rules and made `high-complexity` McCabe-exact. Same corpus, same
+commits, scanned with spaghetti 2.0.0.
+
+| Repo | Before Phase 2: grade / score / findings | After: grade / score / findings | MI (mean) | high-complexity | high-cognitive-complexity | duplicate-code | low-maintainability |
+|---|---|---|---|---|---|---|---|
+| httpx | A / 90.6 / 56 | B / 84.8 / 176 | 61.7 | 8 | 9 | 111 | 1 |
+| rich | B / 89.1 / 208 | B / 80.7 / 456 | 72.3 | 52 | 55 | 188 | 3 |
+| fastapi | B / 89.5 / 142 | B / 81.8 / 364 | 76.0 | 31 | 25 | 196 | 2 |
+| pydantic | B / 82.8 / 328 | C / 70.4 / 615 | 59.6 | 70 | 67 | 215 | 4 |
+| black | C / 67.7 / 206 | D / 47.0 / 339 | 49.8 | 94 | 76 | 47 | 6 |
+
+- **`high-complexity`** moved from an approximation to Radon's exact rules (3211/3211
+  corpus functions agree with `radon cc`). Corpus findings 250 → 255; the message is
+  unchanged, so baselines carry over except where the count changed.
+- **`high-cognitive-complexity`** (Sonar default threshold 15) fires 232 times. A spot
+  check of 15 findings across the five repos (3 per repo, seeded sample) found functions
+  of 27 to 375 lines with scores 16 to 151; the three borderline hits (16-18) are 30-50
+  line functions with a loop-in-conditional shape a reviewer would still call dense. The
+  rule is the published Sonar definition and ships at `warning`. Against the ROADMAP acceptance criterion: the SonarCloud comparison on a
+  50-function sample could not be run offline; the implementation is tested against the
+  worked examples in the specification instead.
+- **`low-maintainability`** (MI < 10, Radon rank C) fires 16 times, every one a
+  1000+-line core module (`rich/console.py`, `fastapi/routing.py`, `pydantic/types.py`,
+  `black/__init__.py`). True positives by definition of the metric; whether a maintainer
+  acts on them is a product decision, which is why the threshold is Radon's lowest rank.
+- **`duplicate-code`** fires 757 times at 50 tokens. A spot check of 15 found no
+  misfires — every region is a genuine copy — but most are *deliberate* copies: httpx's
+  sync/async client and transport pairs, FastAPI's `APIRouter`/`FastAPI` mirrored method
+  signatures, Black's parallel transformer classes. A per-block `warning` dropped every
+  corpus repo to grade C. Duplication is a density metric in SonarQube and Qlty, not a
+  defect, so the rule ships at `info` (grades recover to A/B/B/C/D) and remains available
+  at `warning` via `[tool.spaghetti.rules]` for teams that gate on it. Known limitation:
+  table-like data (long lists of similar calls) with varying arity can still form a
+  region; strictly periodic windows are already skipped.

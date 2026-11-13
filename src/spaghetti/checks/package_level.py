@@ -1,10 +1,12 @@
-"""Cross-file, whole-package checks (import cycles, duplicate functions, sync/async twins)."""
+"""Cross-file, whole-package checks (duplicate functions, sync/async twins, orphan
+interfaces) plus the import-resolution helpers the workspace-level graph reuses."""
 
 from __future__ import annotations
 
 import ast
 import difflib
 from collections import defaultdict
+from collections.abc import Iterator
 from pathlib import Path
 
 import spaghetti.config as _cfg
@@ -19,9 +21,7 @@ from spaghetti.config import DUNDER_RE as _DUNDER_RE
 from spaghetti.models import Issue, _display_path
 
 __all__ = [
-    "check_import_cycles_pkg",
     "check_duplicate_functions_pkg",
-    "check_module_coupling_pkg",
     "check_sync_async_twins_pkg",
 ]
 
@@ -130,145 +130,6 @@ def _module_level_imports(tree: ast.Module) -> list[ast.Import | ast.ImportFrom]
     return found
 
 
-def _build_import_graph(
-    pkg_name: str, files: list[tuple[Path, ast.Module]]
-) -> tuple[dict[str, set[str]], dict[str, Path]]:
-    """The real intra-package import graph: module -> set of modules it
-    imports, plus module -> its file. Shared by check_import_cycles_pkg and
-    check_module_coupling_pkg so both see identical import resolution
-    (relative imports, package-prefix resolution, TYPE_CHECKING exclusion)
-    instead of duplicating it.
-
-    A module only appears as a ``graph`` key if it has at least one
-    qualifying import; a module with zero intra-package imports is still
-    present in ``file_for_module``, just absent from ``graph`` (equivalent
-    to an empty adjacency set — callers use ``graph.get(module, ...)``).
-    """
-    prefix = _package_prefix(pkg_name)
-    graph: dict[str, set[str]] = defaultdict(set)
-    file_for_module: dict[str, Path] = {}
-    if not prefix:
-        return graph, file_for_module
-    stem = prefix.rstrip(".")
-
-    modules = {_module_and_package_for(pkg_name, fp)[0]: fp for fp, _ in files}
-    file_for_module.update(modules)
-
-    for filepath, tree in files:
-        module, package = _module_and_package_for(pkg_name, filepath)
-        for node in _module_level_imports(tree):
-            if isinstance(node, ast.ImportFrom):
-                for resolved in _import_targets(package, node, modules):
-                    if resolved and (resolved == stem or resolved.startswith(stem + ".")):
-                        graph[module].add(resolved)
-            elif isinstance(node, ast.Import):
-                for alias in node.names:
-                    if alias.name == stem or alias.name.startswith(stem + "."):
-                        graph[module].add(alias.name)
-
-    return graph, file_for_module
-
-
-def check_import_cycles_pkg(pkg_name: str, files: list[tuple[Path, ast.Module]]) -> list[Issue]:
-    """Finds actual import cycles via DFS over the real intra-package import graph."""
-    graph, file_for_module = _build_import_graph(pkg_name, files)
-    if not file_for_module:
-        return []
-
-    issues: list[Issue] = []
-    visited: set[str] = set()
-    on_stack: set[str] = set()
-    stack: list[str] = []
-    reported: set[frozenset[str]] = set()
-
-    def dfs(current: str) -> None:
-        visited.add(current)
-        stack.append(current)
-        on_stack.add(current)
-        for neighbor in graph.get(current, ()):
-            if neighbor in on_stack:
-                cycle_start = stack.index(neighbor)
-                cycle = [*stack[cycle_start:], neighbor]
-                key = frozenset(cycle)
-                if key not in reported:
-                    reported.add(key)
-                    loc = file_for_module.get(stack[cycle_start])
-                    if loc is not None:
-                        issues.append(
-                            Issue(
-                                file=loc,
-                                line=1,
-                                severity="error",
-                                rule="import-cycle",
-                                package=pkg_name,
-                                message=(
-                                    "Circular import: "
-                                    + " → ".join(cycle)
-                                    + " — extract a shared abstraction (e.g. a "
-                                    "typing.Protocol) both sides can depend on, and inject "
-                                    "it instead of importing directly to break the cycle "
-                                    "(Dependency Inversion Principle / Dependency Injection)"
-                                ),
-                            )
-                        )
-            elif neighbor not in visited:
-                dfs(neighbor)
-        stack.pop()
-        on_stack.discard(current)
-
-    for module in list(graph.keys()):
-        if module not in visited:
-            dfs(module)
-
-    return issues
-
-
-def check_module_coupling_pkg(pkg_name: str, files: list[tuple[Path, ast.Module]]) -> list[Issue]:
-    """Flags a module as an overloaded "hub" — reusing the same import graph
-    as check_import_cycles_pkg, but measuring fan-in/fan-out instead of
-    cycles.
-
-    Only flagged when *both* fan-in and fan-out exceed their thresholds:
-    high fan-in alone is often just a legitimately central util module (many
-    things use it, by design), and high fan-out alone is often just a
-    legitimately thin orchestrator (it wires many things together, by
-    design). Both-high together is the real signal — a module that's both
-    heavily depended-on and heavily dependent, so a change anywhere near it
-    tends to ripple.
-    """
-    graph, file_for_module = _build_import_graph(pkg_name, files)
-    if not file_for_module:
-        return []
-
-    fan_in: dict[str, int] = defaultdict(int)
-    for imports in graph.values():
-        for target in imports:
-            fan_in[target] += 1
-
-    issues: list[Issue] = []
-    for module, filepath in file_for_module.items():
-        module_fan_out = len(graph.get(module, ()))
-        module_fan_in = fan_in.get(module, 0)
-        if module_fan_in > _cfg.MAX_MODULE_FAN_IN and module_fan_out > _cfg.MAX_MODULE_FAN_OUT:
-            issues.append(
-                Issue(
-                    file=filepath,
-                    line=1,
-                    severity="warning",
-                    rule="high-coupling",
-                    package=pkg_name,
-                    message=(
-                        f"module {module} has fan-in={module_fan_in} and "
-                        f"fan-out={module_fan_out} (max {_cfg.MAX_MODULE_FAN_IN}/{_cfg.MAX_MODULE_FAN_OUT}) "
-                        "— other modules depend on it heavily and it depends on other "
-                        "modules heavily; consider splitting it or inverting some "
-                        "dependencies (Dependency Inversion Principle)"
-                    ),
-                )
-            )
-    return issues
-
-
 # ── Duplicate Function Bodies (whole-package) ─────────────────────────────────
 
 # A body needs at least this many occurrences to be a "duplicate" at all.
@@ -352,39 +213,47 @@ def check_sync_async_twins_pkg(
                 )
 
     issues: list[Issue] = []
-    reported: set[frozenset[tuple[str, str]]] = set()
-
-    for (filepath, class_name), by_name in scope_functions.items():
-        for name, (node, is_async) in by_name.items():
-            if _line_count(node) < _cfg.MIN_TWIN_FUNCTION_LINES:
+    reported: set[frozenset[str]] = set()
+    for (filepath, _class_name), by_name in scope_functions.items():
+        for name, candidate in _twin_pairs(by_name):
+            pair_key = frozenset({name, candidate})
+            if pair_key in reported:
                 continue
-            for candidate in _twin_candidates(name):
-                if candidate == name or candidate not in by_name:
-                    continue
-                other_node, other_is_async = by_name[candidate]
-                pair_key = frozenset({(name, class_name or ""), (candidate, class_name or "")})
-                if pair_key in reported:
-                    continue
-                ratio = difflib.SequenceMatcher(
-                    None, ast.unparse(node), ast.unparse(other_node)
-                ).ratio()
-                if ratio >= min_ratio:
-                    reported.add(pair_key)
-                    issues.append(
-                        Issue(
-                            file=filepath,
-                            line=min(node.lineno, other_node.lineno),
-                            severity="warning",
-                            rule="sync-async-duplication",
-                            package=pkg_name,
-                            message=(
-                                f"{name}() and {candidate}() are {ratio:.0%} similar — "
-                                "likely copy-pasted sync/async twins; extract a shared helper "
-                                "for the non-blocking parts"
-                            ),
-                        )
-                    )
+            node, other_node = by_name[name][0], by_name[candidate][0]
+            ratio = difflib.SequenceMatcher(
+                None, ast.unparse(node), ast.unparse(other_node)
+            ).ratio()
+            if ratio < min_ratio:
+                continue
+            reported.add(pair_key)
+            issues.append(
+                Issue(
+                    file=filepath,
+                    line=min(node.lineno, other_node.lineno),
+                    severity="warning",
+                    rule="sync-async-duplication",
+                    package=pkg_name,
+                    message=(
+                        f"{name}() and {candidate}() are {ratio:.0%} similar — "
+                        "likely copy-pasted sync/async twins; extract a shared helper "
+                        "for the non-blocking parts"
+                    ),
+                )
+            )
     return issues
+
+
+def _twin_pairs(
+    by_name: dict[str, tuple[ast.FunctionDef | ast.AsyncFunctionDef, bool]],
+) -> Iterator[tuple[str, str]]:
+    """(name, counterpart) for every function in one scope whose plausible twin
+    also exists there, skipping bodies too short to compare meaningfully."""
+    for name, (node, _is_async) in by_name.items():
+        if _line_count(node) < _cfg.MIN_TWIN_FUNCTION_LINES:
+            continue
+        for candidate in _twin_candidates(name):
+            if candidate != name and candidate in by_name:
+                yield name, candidate
 
 
 # ── Rule: Orphan Interfaces ───────────────────────────────────────────────────
@@ -399,55 +268,56 @@ def check_orphan_interfaces_pkg(pkg_name: str, files: list[tuple[Path, ast.Modul
     """
     interfaces: dict[str, tuple[Path, ast.ClassDef]] = {}
     implementations: dict[str, list[str]] = defaultdict(list)
-
     for filepath, tree in files:
         for node in ast.walk(tree):
             if not isinstance(node, ast.ClassDef):
                 continue
-
-            is_abstract = False
-
-            for base in node.bases:
-                base_name = None
-                if isinstance(base, ast.Name):
-                    base_name = base.id
-                elif isinstance(base, ast.Attribute):
-                    base_name = base.attr
-
-                if base_name in ("ABC", "Protocol"):
-                    is_abstract = True
-                elif base_name:
+            base_names = _base_names_of(node)
+            for base_name in base_names:
+                if base_name not in _ABSTRACT_BASES:
                     implementations[base_name].append(node.name)
-
-            for keyword in node.keywords:
-                if keyword.arg == "metaclass":
-                    val_name = getattr(keyword.value, "id", getattr(keyword.value, "attr", ""))
-                    if val_name == "ABCMeta":
-                        is_abstract = True
-
-            if is_abstract:
+            if _ABSTRACT_BASES & set(base_names) or _has_abc_metaclass(node):
                 interfaces[node.name] = (filepath, node)
 
     issues: list[Issue] = []
-
     for iface_name, (filepath, node) in interfaces.items():
         impls = implementations.get(iface_name, [])
-
-        if len(impls) == 1:
-            impl_name = impls[0]
-            issues.append(
-                Issue(
-                    file=filepath,
-                    line=node.lineno,
-                    **_loc(node),
-                    severity="info",
-                    rule="orphan-interface",
-                    package=pkg_name,
-                    message=(
-                        f"Interface '{iface_name}' has exactly one implementation "
-                        f"('{impl_name}'). Consider removing the abstraction."
-                    ),
-                )
+        if len(impls) != 1:
+            continue
+        issues.append(
+            Issue(
+                file=filepath,
+                line=node.lineno,
+                **_loc(node),
+                severity="info",
+                rule="orphan-interface",
+                package=pkg_name,
+                message=(
+                    f"Interface '{iface_name}' has exactly one implementation "
+                    f"('{impls[0]}'). Consider removing the abstraction."
+                ),
             )
-
+        )
     return issues
+
+
+_ABSTRACT_BASES = frozenset({"ABC", "Protocol"})
+
+
+def _base_names_of(node: ast.ClassDef) -> list[str]:
+    names: list[str] = []
+    for base in node.bases:
+        if isinstance(base, ast.Name):
+            names.append(base.id)
+        elif isinstance(base, ast.Attribute):
+            names.append(base.attr)
+    return names
+
+
+def _has_abc_metaclass(node: ast.ClassDef) -> bool:
+    for keyword in node.keywords:
+        if keyword.arg == "metaclass":
+            value = getattr(keyword.value, "id", getattr(keyword.value, "attr", ""))
+            if value == "ABCMeta":
+                return True
+    return False
