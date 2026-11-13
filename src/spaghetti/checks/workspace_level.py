@@ -23,12 +23,15 @@ from spaghetti.checks.package_level import (
     _package_prefix,
 )
 from spaghetti.clones import TokenStream, duplicated_regions, find_clone_groups
+from spaghetti.contracts import Contract, violation_reason
 from spaghetti.models import Issue, _display_path
 
 __all__ = [
     "RawImport",
     "collect_raw_imports",
     "build_import_graph",
+    "dependency_edges",
+    "check_contracts_ws",
     "check_import_cycles_ws",
     "check_module_coupling_ws",
     "check_duplicate_code_ws",
@@ -44,16 +47,19 @@ class RawImport:
     level: int
     module: str | None
     names: tuple[str, ...]
+    line: int = 1
 
 
 def collect_raw_imports(tree: ast.Module) -> list[RawImport]:
     raw: list[RawImport] = []
     for node in _module_level_imports(tree):
         if isinstance(node, ast.ImportFrom):
-            raw.append(RawImport(node.level, node.module, tuple(a.name for a in node.names)))
+            raw.append(
+                RawImport(node.level, node.module, tuple(a.name for a in node.names), node.lineno)
+            )
         else:
             for alias in node.names:
-                raw.append(RawImport(-1, alias.name, ()))
+                raw.append(RawImport(-1, alias.name, (), node.lineno))
     return raw
 
 
@@ -105,6 +111,53 @@ def build_import_graph(
                 t for t in _resolve(raw, package, modules) if t and in_workspace(t)
             )
     return graph, index
+
+
+Edge = tuple[str, str, int]
+"""(importing module, imported dotted name, line) — every import, third-party included."""
+
+
+def dependency_edges(
+    imports_by_package: dict[str, dict[Path, list[RawImport]]],
+) -> tuple[list[Edge], ModuleIndex]:
+    """Every resolved import edge in file order, workspace and external alike,
+    for the architecture-contract check."""
+    index = _module_index(imports_by_package)
+    modules = {module: entry[1] for module, entry in index.items()}
+    edges: list[Edge] = []
+    for module, (pkg_name, filepath) in index.items():
+        _, package = _module_and_package_for(pkg_name, filepath)
+        for raw in imports_by_package[pkg_name][filepath]:
+            edges.extend((module, t, raw.line) for t in _resolve(raw, package, modules) if t)
+    return edges, index
+
+
+def check_contracts_ws(
+    edges: list[Edge], index: ModuleIndex, contracts: list[Contract]
+) -> list[Issue]:
+    """One finding per (import, contract) pair that breaks a contract."""
+    issues: list[Issue] = []
+    for module, target, line in edges:
+        for contract in contracts:
+            reason = violation_reason(contract, module, target)
+            if reason is None:
+                continue
+            pkg_name, filepath = index[module]
+            issues.append(
+                Issue(
+                    file=filepath,
+                    line=line,
+                    severity="error",
+                    rule="contract-violation",
+                    package=pkg_name,
+                    message=(
+                        f"Contract '{contract.name}': {module} imports {target} — {reason}; "
+                        "depend on an abstraction (e.g. a typing.Protocol) the lower layer "
+                        "implements and inject it instead (Dependency Inversion Principle)"
+                    ),
+                )
+            )
+    return issues
 
 
 _CYCLE_HINT = (

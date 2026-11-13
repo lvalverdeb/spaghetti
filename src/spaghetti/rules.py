@@ -105,6 +105,12 @@ _RULES: tuple[RuleMeta, ...] = (
     _r("unreadable-file", "File could not be read", "error", "infra"),
     # ── per-package cross-file ──
     _r("import-cycle", "Circular import between modules", "error", "workspace"),
+    _r(
+        "contract-violation",
+        "Import forbidden by an architecture contract",
+        "error",
+        "workspace",
+    ),
     _r("high-coupling", "Module with both high fan-in and high fan-out", "warning", "workspace"),
     _r(
         "duplicate-code",

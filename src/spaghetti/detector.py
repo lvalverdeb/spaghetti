@@ -41,10 +41,12 @@ from spaghetti.checks.package_level import (
 )
 from spaghetti.checks.workspace_level import (
     build_import_graph,
+    check_contracts_ws,
     check_duplicate_code_ws,
     check_import_cycles_ws,
     check_module_coupling_ws,
     collect_raw_imports,
+    dependency_edges,
 )
 from spaghetti.clones import token_stream
 from spaghetti.metrics import maintainability_index
@@ -256,6 +258,8 @@ def scan_workspace(per_package: dict[str, ScanResult], *, config: ScanConfig) ->
         *check_module_coupling_ws(graph, index),
         *check_duplicate_code_ws(streams, config.min_clone_tokens),
     ]
+    if _cfg.CONTRACTS:
+        found.extend(check_contracts_ws(*dependency_edges(imports), _cfg.CONTRACTS))
     lines_cache: dict[Path, list[str]] = {}
 
     def lines_of(path: Path) -> list[str]:

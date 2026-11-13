@@ -85,6 +85,25 @@
         }
       }
     },
+    "plan": {
+      "type": "array",
+      "description": "Present when --plan --json was given (added in 2.2): the remediation plan as data.",
+      "items": {
+        "type": "object",
+        "required": ["priority", "rule", "severity", "effort", "count", "score", "files", "description", "fix"],
+        "properties": {
+          "priority": {"type": "string", "enum": ["P0", "P1", "P2", "P3"]},
+          "rule": {"type": "string"},
+          "severity": {"$ref": "#/$defs/severity"},
+          "effort": {"type": "string"},
+          "count": {"type": "integer"},
+          "score": {"type": "number"},
+          "files": {"type": "array", "items": {"type": "string"}},
+          "description": {"type": "string"},
+          "fix": {"type": ["string", "null"]}
+        }
+      }
+    },
     "compare": {
       "type": "object",
       "description": "Present when --compare was given (added in 2.1).",

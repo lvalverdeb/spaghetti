@@ -217,6 +217,16 @@ receive JSON with rule, location, severity and fix pattern; the docs site lists 
 rules with precision numbers; an architecture contract forbidding `domain → transport`
 produces a finding in the test fixtures.
 
+*Status 2026-11-13 (Python, version 2.2.0):* all four items landed. Editor integration is
+the documented SARIF path (README "Editor integration"). `spaghetti mcp` serves `scan`,
+`plan`, `explain_rule`, `compare`, `baseline` over stdio with a dependency-free JSON-RPC
+layer; `plan` returns rule, files, severity and the fix pattern per step and is covered by
+an end-to-end stdio test. `docs/rules/` (47 pages) is generated from `rules.py` +
+`rule_docs.py` + `docs/precision.md` with a staleness test. `[[tool.spaghetti.contracts]]`
+(`forbidden` and `layers`) is evaluated on the workspace import graph as
+`contract-violation`; the fixture test forbids `shop.domain → shop.transport`. Rust mirror
+pending (Phases 3 and 4 together).
+
 ### Phase 5 — Scale and hardening (≈ 2–3 weeks, then ongoing)
 
 - **Benchmark corpus and performance budget.** Scan `django`, `pandas`, `airflow`

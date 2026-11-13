@@ -131,6 +131,8 @@ TRANSPORT_MODULES: frozenset[str] = frozenset({"fastapi", "starlette", "httpx", 
 # ``{rule-id: "off" | "info" | "warning" | "error"}`` from ``[tool.spaghetti.rules]``;
 # applied by ``detector.scan_package`` after the checks run.
 RULE_OVERRIDES: dict[str, str] = {}
+# Architecture contracts from [[tool.spaghetti.contracts]] (spaghetti.contracts.Contract).
+CONTRACTS: list = []
 
 # ── Compiled regexes ──────────────────────────────────────────────────────────
 

@@ -12,6 +12,12 @@ Recognised keys (kebab-case in the file)::
     fail-on = "error"                       # error | warning | info | never
     baseline = ".spaghetti-baseline.json"   # relative to the settings file
     snapshot-store = ".spaghetti/snapshots.jsonl"  # relative to the settings file
+
+    [[tool.spaghetti.contracts]]            # architecture contracts, see spaghetti.contracts
+    name = "domain stays framework-free"
+    type = "forbidden"
+    source = ["my_lib.domain"]
+    forbidden = ["my_lib.transport", "fastapi"]
     library-packages = ["my-lib"]           # packages transport-in-library applies to
 
     [tool.spaghetti.packages]
@@ -43,6 +49,7 @@ from typing import Any
 import yaml
 
 import spaghetti.config as _cfg
+from spaghetti.contracts import Contract, ContractError, parse_contracts
 from spaghetti.rules import RULE_IDS
 
 FAIL_ON_CHOICES = ("error", "warning", "info", "never")
@@ -77,6 +84,7 @@ class Settings:
     fail_on: str | None = None
     baseline: Path | None = None
     snapshot_store: Path | None = None
+    contracts: list[Contract] = field(default_factory=list)
     packages: dict[str, Path] = field(default_factory=dict)
     sources: list[Path] = field(default_factory=list)
 
@@ -93,6 +101,7 @@ class Settings:
             snapshot_store=(
                 other.snapshot_store if other.snapshot_store is not None else self.snapshot_store
             ),
+            contracts=[*self.contracts, *other.contracts],
             packages={**self.packages, **other.packages},
             sources=[*self.sources, *other.sources],
         )
@@ -142,7 +151,15 @@ def load_settings(*, pyproject: Path | None, yaml_path: Path | None) -> Settings
     return settings
 
 
-_SCALAR_KEYS = {"exclude", "fail-on", "baseline", "snapshot-store", "library-packages", "packages"}
+_SCALAR_KEYS = {
+    "exclude",
+    "fail-on",
+    "baseline",
+    "snapshot-store",
+    "library-packages",
+    "packages",
+    "contracts",
+}
 _TABLE_KEYS = {"thresholds", "rules", "layers"}
 
 
@@ -174,6 +191,10 @@ def parse_mapping(data: dict[str, Any], *, origin: Path) -> Settings:
     if not isinstance(packages, dict) or not all(isinstance(v, str) for v in packages.values()):
         raise SettingsError(f"{origin}: packages must map names to path strings")
     s.packages = {name: (base_dir / path).resolve() for name, path in packages.items()}
+    try:
+        s.contracts = parse_contracts(data.get("contracts", []), str(origin))
+    except ContractError as exc:
+        raise SettingsError(str(exc)) from exc
     s.thresholds = _parse_thresholds(data.get("thresholds", {}), origin)
     s.rules = _parse_rules(data.get("rules", {}), origin)
     s.layers = _parse_layers(data.get("layers", {}), origin)
@@ -246,6 +267,7 @@ def to_overrides(settings: Settings) -> dict[str, Any]:
         "rules": dict(settings.rules),
         "layers": settings.layers,
         "library_packages": list(settings.library_packages),
+        "contracts": [c.to_json() for c in settings.contracts],
     }
 
 
@@ -255,6 +277,7 @@ def apply_overrides(overrides: dict[str, Any]) -> None:
     _cfg.RULE_OVERRIDES = dict(overrides.get("rules", {}))
     _cfg.LAYER_RULES = overrides.get("layers", {})
     _cfg.LIBRARY_PACKAGES = frozenset(overrides.get("library_packages", []))
+    _cfg.CONTRACTS = [Contract.from_json(c) for c in overrides.get("contracts", [])]
 
 
 def apply_settings(settings: Settings) -> dict[str, Any]:

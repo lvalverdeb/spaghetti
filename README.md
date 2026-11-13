@@ -218,7 +218,7 @@ The plan groups issues by rule, counts affected files, and lists a recommended f
 
 ## Rules
 
-The detector checks **43 rules** across five tiers:
+The detector checks **46 rules** across five tiers. Every rule has a page under [docs/rules/](docs/rules/README.md) — what it catches, why, the fix pattern, thresholds, precision figure and the Pylint/Ruff/Sonar equivalent — generated from the catalog so it cannot drift.
 
 **Per-file AST checks (32 rules):** `long-function`, `high-complexity` (McCabe cyclomatic complexity, identical to `radon cc`), `high-cognitive-complexity` (SonarSource cognitive complexity, default 15), `missing-return-type`, `missing-param-type`, `too-many-params`, `excessive-returns`, `boolean-flag-params`, `deep-nesting`, `untyped-dict`, `unused-import`, `swallowed-exception`, `duplicate-branch`, `encapsulation-violation`, `god-class` (also factors in WMC — total cyclomatic complexity summed across a class's methods — alongside method/attribute counts), `layer-violation`, `transport-in-library`, `potential-circular-import`, `god-module`, `mutable-default`, `bare-except`, `star-import`, `global-mutable`, `scope-mutation`, `dead-code`, `message-chain`, `excessive-decorators`, `magic-number`, `magic-string`, `missing-else`, `lazy-class`, `deep-inheritance`, `pass-through-method`.
 
@@ -228,7 +228,7 @@ The detector checks **43 rules** across five tiers:
 
 **Per-package cross-file checks (3 rules):** `orphan-interface` (an abstract class with exactly one implementation), `duplicate-function-body`, `sync-async-duplication`.
 
-**Workspace checks (3 rules), run once over every registered package:** `import-cycle` and `high-coupling` on the union import graph, so a cycle between two packages is found; `duplicate-code`, a PMD-CPD-style type-2 clone detector over a normalised AST token stream that finds copies with renamed variables (default window 50 tokens, `min-clone-tokens`). Duplication ships at `info`: it is a density signal, and mature libraries carry deliberate copies (sync/async twins).
+**Workspace checks (4 rules), run once over every registered package:** `import-cycle` and `high-coupling` on the union import graph, so a cycle between two packages is found; `contract-violation` for the [architecture contracts](#architecture-contracts) you declare; `duplicate-code`, a PMD-CPD-style type-2 clone detector over a normalised AST token stream that finds copies with renamed variables (default window 50 tokens, `min-clone-tokens`). Duplication ships at `info`: it is a density signal, and mature libraries carry deliberate copies (sync/async twins).
 
 **Off by default** (switch on with `[tool.spaghetti.rules]`): `magic-number`, `magic-string`, `missing-else`, `pass-through-method`, `potential-circular-import`, `unused-import`, `star-import`, and `low-cohesion` (LCOM4). The first five scored at or near zero precision in the [2026-11 audit over five public codebases](docs/precision.md); the next two are Ruff's territory (F401/F403). The audit also documents why `too-many-params` counts only required positional parameters, why `lazy-class` exempts every subclass, and the other calibrations.
 
@@ -327,6 +327,59 @@ Needs `security-events: write` to upload SARIF (set `upload-sarif: false` otherw
       args: ["--diff-base", "HEAD"]
 ```
 
+## Editor integration
+
+SARIF is the supported path. Install a SARIF viewer (VS Code: *SARIF Viewer* by Microsoft;
+JetBrains: *Qodana*/SARIF import) and point it at `spaghetti --format sarif > spaghetti.sarif`;
+findings land in the Problems panel with the fix hint as the message. An LSP server is not
+planned unless users ask: the smells here are file- and workspace-level, and a save-time scan of
+one package takes about a second.
+
+## Agents: the MCP server
+
+`spaghetti mcp` serves five tools over the Model Context Protocol on stdio so a coding agent can
+ask "what should I fix in this package and how" and get the answer as data, including the
+refactoring pattern per rule — the thing the fix hints were written for.
+
+```bash
+claude mcp add spaghetti -- spaghetti mcp          # Claude Code
+# Cursor / other clients: command "spaghetti", args ["mcp"]
+```
+
+| Tool | Returns |
+|---|---|
+| `plan` | The remediation plan as data: priority, rule, severity, effort, files, **fix pattern**, plus every finding. Start here. |
+| `scan` | The JSON report (grades, scores, findings with fingerprints). |
+| `explain_rule` | Why a rule matters, how to fix it, its thresholds and equivalents elsewhere. |
+| `compare` | Delta against a stored snapshot: introduced, fixed, files worse. |
+| `baseline` | `status` of the baseline, or `update` it from the current scan. |
+
+Each scan tool runs the CLI in a child process in the given `path`, so the project's own
+`[tool.spaghetti]` settings apply. The same structured plan is available from the shell with
+`spaghetti --plan --json`.
+
+## Architecture contracts
+
+The custom rule most teams want is "this must not import that". Declare it; spaghetti evaluates
+it on the import graph it already builds and reports `contract-violation` (error).
+
+```toml
+[[tool.spaghetti.contracts]]
+name = "domain stays framework-free"
+type = "forbidden"
+source = ["shop.domain"]                    # modules under these prefixes…
+forbidden = ["shop.transport", "fastapi"]   # …may not import these (third-party too)
+allow = ["fastapi.encoders"]                # …except these
+
+[[tool.spaghetti.contracts]]
+name = "clean layering"
+type = "layers"
+layers = ["shop.api", "shop.service", "shop.domain"]   # highest first; lower may not import higher
+```
+
+Prefixes match whole dotted segments (`shop.domain` matches `shop.domain.order`, not
+`shop.domainx`). This is the import-linter / Tach feature without a second tool or config file.
+
 ## Trend, Compare, Hotspots and the HTML Report
 
 Linters answer "what is wrong now". These answer "is it getting better, what did this
@@ -398,6 +451,7 @@ uv sync --group dev
 uv run pytest                       # unit tests
 uv run ruff check src tests scripts
 uv run python scripts/dogfood_gate.py   # spaghetti on itself: no errors, grade B or better
+uv run python scripts/gen_rule_docs.py  # regenerate docs/rules/ (a test fails when it is stale)
 ```
 
 CI runs the suite on Python 3.11, 3.12 and 3.13, plus the dogfood gate. See

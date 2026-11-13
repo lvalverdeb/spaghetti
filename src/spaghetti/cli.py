@@ -26,7 +26,7 @@ from spaghetti.diff_filter import DiffError, changed_lines, restrict_to_changed
 from spaghetti.html_report import build_html
 from spaghetti.models import Issue, ScanConfig, ScanResult, _display_path
 from spaghetti.sarif import build_sarif
-from spaghetti.scoring import compute_score, file_penalties, plan_report
+from spaghetti.scoring import build_remediation_plan, compute_score, file_penalties, plan_report
 from spaghetti.settings import (
     FAIL_ON_CHOICES,
     Settings,
@@ -194,7 +194,13 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         HOTSPOT_WINDOW_MONTHS,
     )
 
-    parser = argparse.ArgumentParser(description="Spaghetti Code Detector")
+    parser = argparse.ArgumentParser(
+        description="Spaghetti Code Detector",
+        epilog=(
+            "Subcommand: 'spaghetti mcp' serves the scan, plan, explain_rule, compare and "
+            "baseline tools over the Model Context Protocol (stdio) for coding agents."
+        ),
+    )
     parser.add_argument(
         "--version",
         action="version",
@@ -677,7 +683,13 @@ def _emit_report(
 
     fmt = _output_format(args)
     notes = gating.notes() + history.notes()
-    if args.plan:
+    if args.plan and fmt == "json":
+        report = _json_report(filtered, total_result, per_package)
+        report.update(gating.json())
+        report.update(history.json())
+        report["plan"] = _plan_json(filtered, history, args.top)
+        print(json.dumps(report, indent=_JSON_INDENT))
+    elif args.plan:
         note = None
         if history.hotspots is not None:
             note = f"Weighted by git change frequency over the last {history.months} months"
@@ -740,6 +752,10 @@ def _exit_code(issues: list[Issue], fail_on: str) -> int:
 
 
 def main() -> int:
+    if sys.argv[1:2] == ["mcp"]:
+        from spaghetti.mcp import serve
+
+        return serve(sys.stdin, sys.stdout, version=_spaghetti_version())
     parser = _build_arg_parser()
     args = parser.parse_args()
     from spaghetti.scanner import review_packages_concurrently, scan_workspace
@@ -827,6 +843,27 @@ def _package_json(result: ScanResult) -> dict[str, object]:
             else None
         ),
     }
+
+
+def _plan_json(filtered: list[Issue], history: _History, top: int) -> list[dict[str, object]]:
+    """The remediation plan as data, each step carrying its rule's fix pattern so an
+    agent gets rule, locations, severity and *how* in one call."""
+    from spaghetti.rule_docs import RULE_DOCS
+
+    return [
+        {
+            "priority": step.priority,
+            "rule": step.rule,
+            "severity": step.severity,
+            "effort": step.effort,
+            "count": step.count,
+            "score": step.score,
+            "files": step.files,
+            "description": step.description,
+            "fix": RULE_DOCS[step.rule].fix if step.rule in RULE_DOCS else None,
+        }
+        for step in build_remediation_plan(filtered, weight=history.weight)[:top]
+    ]
 
 
 def _json_report(

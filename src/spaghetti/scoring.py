@@ -51,6 +51,7 @@ def compute_score(result: ScanResult) -> tuple[float, str]:
 _FIX_EFFORT: dict[str, float] = {
     "import-cycle": 5.0,
     "layer-violation": 4.0,
+    "contract-violation": 4.0,
     "transport-in-library": 4.0,
     "god-class": 5.0,
     "god-module": 4.0,

@@ -21,7 +21,7 @@ The spaghetti detector is a workspace-level quality gate. It scans Python packag
    ┌───────────────┐                    ┌──────────────────┐
     │  Per-File     │                    │  Per-Package     │
     │  AST Checks   │                    │  Cross-File      │
-    │  (32 rules)   │                    │  Checks (3 rules)│
+    │  (32 rules)   │                    │  Checks (4 rules)│
    └───────┬───────┘                    └────────┬─────────┘
            │                                     │
            ▼                                     ▼
@@ -54,6 +54,10 @@ Each package is scanned in its own worker process (`concurrent.futures.ProcessPo
 ### 2.1.3 History: snapshots, comparison, churn
 
 `spaghetti.snapshots` serialises a run (`Snapshot`: SHA, timestamp, per-package scores, per-file penalties from `scoring.file_penalties`, finding fingerprints) to a JSONL store and diffs two runs by fingerprint (`compare` → `Comparison`). `spaghetti.churn` reads `git log --since --name-only` for the scanned roots and ranks files by `penalty × churn_factor`, where the factor is `1 + log2(1 + commits) / log2(1 + max_commits)` ∈ [1, 2] — relative to the repository's own hottest file so an active codebase does not promote everything to P0. `build_remediation_plan` accepts that factor as a per-file weight. `spaghetti.html_report` renders all of it as one page with inline CSS and SVG sparklines; the CLI's `_History` object carries the optional comparison and hotspots into every output format.
+
+### 2.1.4 Agent interface and generated documentation
+
+`spaghetti mcp` (`spaghetti.mcp`) is a Model Context Protocol server over stdio — newline-delimited JSON-RPC 2.0, protocol `2025-06-18`, implemented without a dependency so the Rust port mirrors it. It answers `initialize`, `ping`, `tools/list`, `tools/call` and ignores notifications; tools are `scan`, `plan`, `explain_rule`, `compare`, `baseline`. Scan tools run the CLI in a child process in the requested directory (settings are applied by mutating `spaghetti.config`, so a long-lived in-process server would leak them between projects) and return the JSON report as `structuredContent`; `plan` adds a `plan` array (also `--plan --json`) whose steps carry the rule's fix pattern. `explain_rule` renders `spaghetti.rule_docs.RULE_DOCS`, the per-rule *why/fix/equivalents/thresholds* metadata; `scripts/gen_rule_docs.py` renders the same data plus `docs/precision.md` into `docs/rules/`, and `tests/test_rule_docs.py` fails when a rule lacks an entry or the pages are stale.
 
 ### 2.2 Scoring
 
@@ -133,7 +137,7 @@ Rules marked **(off)** ship disabled after the [precision audit](docs/precision.
 | `duplicate-function-body` | warning | ≥5 identical lines | Byte-for-byte identical function bodies across files |
 | `sync-async-duplication` | warning | ≥60% text similarity | Sync/async twin pairs (e.g. `load`/`aload`) |
 
-### 3.4.1 Workspace Checks (3 rules)
+### 3.4.1 Workspace Checks (4 rules)
 
 Run once in the parent over every registered package (`detector.scan_workspace`).
 
@@ -141,6 +145,7 @@ Run once in the parent over every registered package (`detector.scan_workspace`)
 |------|----------|-----------|-----------------|
 | `import-cycle` | error | — | Real circular import cycles (DFS on the union import graph of all packages; a cycle spanning two packages is reported once, on the package where it was entered). Imports under `if TYPE_CHECKING:` and `if __name__ == "__main__":` are not edges; `from pkg import name` resolves to the submodule when one exists |
 | `high-coupling` | warning | fan-in >8 **and** fan-out >8 | A module that's both heavily depended-on and heavily dependent — an overloaded "hub". Flags only when both directions exceed threshold, since either alone is often a legitimately central util or a legitimately thin orchestrator |
+| `contract-violation` | error | — | An import that breaks a `[[tool.spaghetti.contracts]]` contract (`spaghetti.contracts`): `forbidden` (source prefixes may not import forbidden prefixes, third-party included, minus `allow`) or `layers` (ordered highest-first; a module may not import a higher layer). Evaluated on every resolved import edge (`dependency_edges`), one finding per import × contract, at the import's line |
 | `duplicate-code` | info | ≥50 normalised tokens (`min-clone-tokens`) | Type-2 clones: a window of the AST token stream (identifiers → `ID`, literals → `LIT`) that recurs anywhere in the workspace, extended to its maximal length. Overlapping sites in one file are merged into one region; each side of a clone gets a finding listing the others. Periodic windows (tables) are skipped |
 
 > A further cross-file metric, `low-cohesion` (LCOM4 — Lack of Cohesion in Methods), is implemented and tested but intentionally **not enabled by default** — not part of `PACKAGE_CHECKS`. Direct-field-sharing LCOM4 can't distinguish genuine low cohesion from this codebase's dominant style of small, parameter-passing private methods with minimal shared instance state, without transitive call-graph reachability analysis it doesn't have. See `check_low_cohesion`'s own docstring in `checks/ast_per_file.py` for the full reasoning and the six false-positive categories it already excludes (classmethods/staticmethods, dataclass/Pydantic/exception value objects, pure pass-throughs, ABC/Protocol interfaces, method-call vs. field-access, and a stateful-method-fraction threshold).
@@ -357,7 +362,7 @@ With `--hotspots` each finding's score is multiplied by its file's churn factor 
 
 ### Snapshot store, `--compare`, `--hotspots` and `--format html`
 
-`--snapshot` appends a JSON line (`schema_version` 1) to the store. `--compare REF` resolves `latest`, `~N`, a SHA prefix or a timestamp prefix and adds a `compare` object to the JSON report (`against`, `score_before/after/delta`, `packages`, `introduced`, `fixed`, `files_worse`, `files_better`); `--hotspots` adds `hotspots` (`months`, `files[]` with `penalty`, `commits`, `authors`, `score`). Both are additive to schema v1. `--format html` writes a single self-contained HTML document to stdout.
+`--snapshot` appends a JSON line (`schema_version` 1) to the store. `--compare REF` resolves `latest`, `~N`, a SHA prefix or a timestamp prefix and adds a `compare` object to the JSON report (`against`, `score_before/after/delta`, `packages`, `introduced`, `fixed`, `files_worse`, `files_better`); `--hotspots` adds `hotspots` (`months`, `files[]` with `penalty`, `commits`, `authors`, `score`). Both are additive to schema v1. `--format html` writes a single self-contained HTML document to stdout. `--plan --json` adds a `plan` array (steps with `priority`, `rule`, `severity`, `effort`, `count`, `score`, `files`, `description`, `fix`) to the report.
 
 ## 8. What the Detector Does NOT Check
 
