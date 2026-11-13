@@ -59,6 +59,12 @@ Each package is scanned in its own worker process (`concurrent.futures.ProcessPo
 
 `spaghetti mcp` (`spaghetti.mcp`) is a Model Context Protocol server over stdio — newline-delimited JSON-RPC 2.0, protocol `2025-06-18`, implemented without a dependency so the Rust port mirrors it. It answers `initialize`, `ping`, `tools/list`, `tools/call` and ignores notifications; tools are `scan`, `plan`, `explain_rule`, `compare`, `baseline`. Scan tools run the CLI in a child process in the requested directory (settings are applied by mutating `spaghetti.config`, so a long-lived in-process server would leak them between projects) and return the JSON report as `structuredContent`; `plan` adds a `plan` array (also `--plan --json`) whose steps carry the rule's fix pattern. `explain_rule` renders `spaghetti.rule_docs.RULE_DOCS`, the per-rule *why/fix/equivalents/thresholds* metadata; `scripts/gen_rule_docs.py` renders the same data plus `docs/precision.md` into `docs/rules/`, and `tests/test_rule_docs.py` fails when a rule lacks an entry or the pages are stale.
 
+### 2.1.5 Incremental cache and limits
+
+`spaghetti.cache.FileCache` stores, per content hash, what `_scan_one_file` produces before `_finalize`: raw findings (byte-offset columns, no fingerprints), MI, function count, raw imports and the token stream. The directory is named by `cache_key(overrides, version)`; `ScanConfig.cache_dir/cache_key` carry it into the workers, which write entries atomically. On a hit the file is re-parsed for the package-level checks only. `MAX_FILE_BYTES` (1 MiB, `max-file-bytes`) and a `RecursionError`/`MemoryError` guard around the per-file checks turn pathological files into one `scan-limit` info finding instead of a stall or a crash. Infra findings take their severity from the catalog.
+
+`ast_helpers.walk` memoizes `list(ast.walk(tree))` on the tree node; the thirty-odd per-file checks and the metrics all iterate that one list instead of re-walking, which cut the Python scan of pydantic from 2.6 s to 1.7 s with byte-identical output.
+
 ### 2.2 Scoring
 
 ```
@@ -120,12 +126,13 @@ Rules marked **(off)** ship disabled after the [precision audit](docs/precision.
 | `todo-marker` | info | — | TODO/FIXME/XXX/HACK comments |
 | `low-maintainability` | warning | MI <10 | Maintainability Index (SEI/Radon) in Radon's rank C — a large, dense, uncommented module |
 
-### 3.3 Infrastructure Checks (2 rules)
+### 3.3 Infrastructure Checks (3 rules)
 
 | Rule | Severity | Threshold | What It Catches |
 |------|----------|-----------|-----------------|
 | `syntax-error` | error | — | Files that fail `ast.parse()` — blocks all deeper AST analysis |
 | `unreadable-file` | error | — | Files that cannot be read (broken symlink, permission denied, I/O error) — blocks all analysis of that file |
+| `scan-limit` | info | `max-file-bytes` (1 MiB) | A file over the size limit, or one whose nesting exhausts the interpreter's recursion limit inside the per-file checks — skipped after counting its lines, so generated code cannot stall a scan or crash it |
 
 > `unreadable-file` is emitted before anything else for that file; the file still counts toward `files_scanned` but contributes no lines and no other findings. `syntax-error` is emitted before any `ALL_CHECKS` run. When a file has a syntax error, no other AST rules are applied to it.
 

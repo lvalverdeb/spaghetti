@@ -103,6 +103,7 @@ _RULES: tuple[RuleMeta, ...] = (
     # ── infrastructure ──
     _r("syntax-error", "File failed to parse", "error", "infra"),
     _r("unreadable-file", "File could not be read", "error", "infra"),
+    _r("scan-limit", "File skipped: over the size or nesting limit", "info", "infra"),
     # ── per-package cross-file ──
     _r("import-cycle", "Circular import between modules", "error", "workspace"),
     _r(

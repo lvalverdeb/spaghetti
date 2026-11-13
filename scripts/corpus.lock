@@ -1,0 +1,11 @@
+# name  url  commit  package-path  set
+# `set` is bench (the Phase 5 performance budget) or audit (the Phase 1 precision corpus).
+# Pinned so the benchmark table and the Python<->Rust conformance diff are reproducible.
+django   https://github.com/django/django.git       f24f38c6b2825f15628c07bf2892f1664eed9361  django                    bench
+pandas   https://github.com/pandas-dev/pandas.git   ff36f3782158e049f6ab1d1889666b9d53cbee6a  pandas                    bench
+airflow  https://github.com/apache/airflow.git      de88871105e2c792dc62272a84ace19542f20946  airflow-core/src/airflow  bench
+httpx    https://github.com/encode/httpx.git        b5addb64f0161ff6bfe94c124ef76f6a1fba5254  httpx                     audit
+rich     https://github.com/Textualize/rich.git     3a109ccdffe5b2d0e30684a304fbd388e99ce57b  rich                      audit
+fastapi  https://github.com/fastapi/fastapi.git     5758a9c8347d911444dca97a55b708cc4a8de4f8  fastapi                   audit
+pydantic https://github.com/pydantic/pydantic.git   560f0f96a37d6913afdfddb2de22030ef08e68c3  pydantic                  audit
+black    https://github.com/psf/black.git           cf3e0938971fc5cd0d71e7b696e86a6fb953332a  src/black                 audit

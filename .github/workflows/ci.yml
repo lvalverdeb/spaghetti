@@ -70,3 +70,49 @@ jobs:
 
       - name: Run ruff format check
         run: uv run ruff format --check src/ tests/
+
+  fuzz:
+    name: Fuzz (hypothesis, ~10 min)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --locked --group dev
+
+      - name: Scanner never raises on generated programs
+        env:
+          SPAGHETTI_FUZZ_EXAMPLES: "1500"
+        run: uv run pytest tests/test_fuzz.py -q -p no:cacheprovider
+
+  benchmark:
+    name: Benchmark budget (django + pandas + airflow)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --locked --group dev
+
+      - name: Cache the pinned corpus
+        uses: actions/cache@v4
+        with:
+          path: .spaghetti/corpus
+          key: corpus-${{ hashFiles('scripts/corpus.lock') }}
+
+      - name: Python port under 90 s on the combined corpus
+        run: uv run python scripts/bench.py --budget 90

@@ -20,6 +20,7 @@ from spaghetti.baseline import (
     save_baseline,
     split_against_baseline,
 )
+from spaghetti.cache import DEFAULT_CACHE_DIR, cache_key
 from spaghetti.churn import ChurnError, Hotspot, churn_factor, file_churn, rank_hotspots
 from spaghetti.config import BANNER_WIDTH, LINES_PER_KLOC
 from spaghetti.diff_filter import DiffError, changed_lines, restrict_to_changed
@@ -340,6 +341,26 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help=f"History window for --hotspots (default: {HOTSPOT_WINDOW_MONTHS} months)",
     )
     parser.add_argument(
+        "--cache",
+        action="store_true",
+        help=(
+            "Reuse per-file results for files whose content and configuration have not "
+            f"changed (store: {DEFAULT_CACHE_DIR}, or --cache-dir / [tool.spaghetti] cache-dir)"
+        ),
+    )
+    parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Ignore `cache = true` from the settings for this run",
+    )
+    parser.add_argument(
+        "--cache-dir",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="Where --cache stores its entries (implies --cache)",
+    )
+    parser.add_argument(
         "--no-pyproject",
         action="store_true",
         help="Ignore any [tool.spaghetti] table found in a pyproject.toml above the cwd",
@@ -586,6 +607,16 @@ class _History:
         return out
 
 
+def _resolve_cache_dir(args: argparse.Namespace, settings: Settings) -> Path | None:
+    """``None`` when the cache is off: it is opt-in by flag or by ``cache = true``."""
+    if args.cache_dir is not None:
+        return args.cache_dir
+    enabled = args.cache or (bool(settings.cache) and not args.no_cache)
+    if not enabled:
+        return None
+    return settings.cache_dir or Path.cwd() / DEFAULT_CACHE_DIR
+
+
 def _resolve_store(args: argparse.Namespace, settings: Settings) -> Path:
     if args.snapshot_store is not None:
         return args.snapshot_store
@@ -765,11 +796,14 @@ def main() -> int:
     run_exclude, non_recursive = _resolve_registry(args, parser, settings)
     min_severity = _SEVERITY_ORDER[args.severity]
 
+    cache_dir = _resolve_cache_dir(args, settings)
     config = ScanConfig(
         exclude=run_exclude,
         min_duplicate_lines=args.min_duplicate_lines,
         twin_similarity=args.twin_similarity,
         min_clone_tokens=_cfg.MIN_CLONE_TOKENS,
+        cache_dir=cache_dir,
+        cache_key=cache_key(overrides, _spaghetti_version()) if cache_dir else "",
     )
     per_package: dict[str, ScanResult] = asyncio.run(
         review_packages_concurrently(
@@ -781,6 +815,12 @@ def main() -> int:
     total_result = ScanResult()
     for pkg_name in args.packages:
         total_result.extend(per_package[pkg_name])
+    if cache_dir is not None:
+        print(
+            f"Cache: {total_result.cache_hits} hit(s), {total_result.cache_misses} miss(es) "
+            f"in {cache_dir / config.cache_key}",
+            file=sys.stderr,
+        )
 
     gating = _Gating()
     gated = _apply_baseline(total_result.issues, args, parser, settings, gating)

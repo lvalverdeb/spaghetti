@@ -33,6 +33,7 @@ from typing import Any
 
 import spaghetti.config as _cfg
 from spaghetti.ast_helpers import _file_line_count
+from spaghetti.cache import FileCache, FileEntry
 from spaghetti.checks import ALL_CHECKS, PACKAGE_CHECKS, SOURCE_AWARE_CHECKS, SOURCE_CHECKS
 from spaghetti.checks.ast_per_file import low_maintainability_issue
 from spaghetti.checks.package_level import (
@@ -79,17 +80,23 @@ def _iter_package_files(pkg_path: Path, config: ScanConfig) -> list[Path]:
 
 def _infra_issue(py_file: Path, pkg_name: str, rule: str, message: str) -> Issue:
     return Issue(
-        file=py_file, line=1, severity="error", rule=rule, package=pkg_name, message=message
+        file=py_file,
+        line=1,
+        severity=RULE_CATALOG[rule].default_severity,
+        rule=rule,
+        package=pkg_name,
+        message=message,
     )
 
 
 def _scan_one_file(
-    py_file: Path, pkg_name: str, result: ScanResult
+    py_file: Path, pkg_name: str, result: ScanResult, cache: FileCache | None = None
 ) -> tuple[str, ast.Module | None] | None:
     """Run every per-file check on ``py_file``, appending findings to ``result``.
 
     Returns ``(source, tree)`` — ``tree`` is ``None`` when the file failed to
-    parse — or ``None`` when the file could not be read at all.
+    parse or was skipped for exceeding a limit — or ``None`` when the file
+    could not be read at all.
     """
     result.files_scanned += 1
     try:
@@ -103,6 +110,65 @@ def _scan_one_file(
         return None
     result.total_lines += _file_line_count(source)
 
+    size = len(source.encode("utf-8", errors="replace"))
+    if size > _cfg.MAX_FILE_BYTES:
+        result.issues.append(
+            _infra_issue(
+                py_file,
+                pkg_name,
+                "scan-limit",
+                f"File skipped — {size} bytes exceeds max-file-bytes ({_cfg.MAX_FILE_BYTES}); "
+                "exclude it if generated, or raise the limit",
+            )
+        )
+        return source, None
+
+    entry = cache.load(source, file=py_file, package=pkg_name) if cache is not None else None
+    if entry is not None:
+        result.cache_hits += 1
+        _apply_cached(py_file, result, entry)
+        return source, _parse_quietly(source, py_file)
+    if cache is not None:
+        result.cache_misses += 1
+
+    start = len(result.issues)
+    functions_before = result.functions_scanned
+    try:
+        tree = _check_one_file(source, py_file, pkg_name, result)
+    except (RecursionError, MemoryError):
+        del result.issues[start:]
+        result.functions_scanned = functions_before
+        result.file_mi.pop(py_file, None)
+        result.raw_imports.pop(py_file, None)
+        result.token_streams.pop(py_file, None)
+        result.issues.append(
+            _infra_issue(
+                py_file,
+                pkg_name,
+                "scan-limit",
+                "File skipped — nesting deeper than the analysis limit; exclude it if generated",
+            )
+        )
+        return source, None
+    if cache is not None:
+        cache.store(
+            source,
+            FileEntry(
+                issues=result.issues[start:],
+                parsed=tree is not None,
+                functions=result.functions_scanned - functions_before,
+                mi=result.file_mi.get(py_file),
+                raw_imports=result.raw_imports.get(py_file),
+                tokens=result.token_streams.get(py_file),
+            ),
+        )
+    return source, tree
+
+
+def _check_one_file(
+    source: str, py_file: Path, pkg_name: str, result: ScanResult
+) -> ast.Module | None:
+    """Every per-file check, uncached. Returns the tree, or ``None`` on a syntax error."""
     for source_check in SOURCE_CHECKS:
         result.issues.extend(source_check(source, py_file, pkg_name))
 
@@ -112,7 +178,7 @@ def _scan_one_file(
         result.issues.append(
             _infra_issue(py_file, pkg_name, "syntax-error", "Failed to parse file — syntax error")
         )
-        return source, None
+        return None
 
     result.functions_scanned += sum(
         isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) for node in ast.walk(tree)
@@ -126,7 +192,27 @@ def _scan_one_file(
     result.issues.extend(low_maintainability_issue(mi, py_file, pkg_name))
     result.raw_imports[py_file] = collect_raw_imports(tree)
     result.token_streams[py_file] = token_stream(tree)
-    return source, tree
+    return tree
+
+
+def _apply_cached(py_file: Path, result: ScanResult, entry: FileEntry) -> None:
+    result.issues.extend(entry.issues)
+    result.functions_scanned += entry.functions
+    if entry.mi is not None:
+        result.file_mi[py_file] = entry.mi
+    if entry.raw_imports is not None:
+        result.raw_imports[py_file] = entry.raw_imports
+    if entry.tokens is not None:
+        result.token_streams[py_file] = entry.tokens
+
+
+def _parse_quietly(source: str, py_file: Path) -> ast.Module | None:
+    """The tree for the package-level checks on a cache hit; the syntax-error
+    finding itself came from the cache."""
+    try:
+        return ast.parse(source, filename=str(py_file))
+    except (SyntaxError, RecursionError, MemoryError):
+        return None
 
 
 def _char_column(line_text: str, byte_offset: int) -> int:
@@ -212,9 +298,10 @@ def scan_package(pkg_name: str, pkg_path: Path, *, config: ScanConfig) -> ScanRe
 
     parsed_files: list[tuple[Path, ast.Module]] = []
     source_lines_by_file: dict[Path, list[str]] = {}
+    cache = FileCache(config.cache_dir, config.cache_key) if config.cache_dir else None
 
     for py_file in _iter_package_files(pkg_path, config):
-        scanned = _scan_one_file(py_file, pkg_name, result)
+        scanned = _scan_one_file(py_file, pkg_name, result, cache)
         if scanned is None:
             continue
         source, tree = scanned

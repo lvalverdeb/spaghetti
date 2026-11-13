@@ -135,3 +135,20 @@ def _walk_with_class_context(tree: ast.AST) -> Iterator[tuple[ast.AST, str | Non
             yield from visit(child, new_class_name)
 
     yield from visit(tree, None)
+
+
+def walk(node: ast.AST) -> list[ast.AST]:
+    """``list(ast.walk(node))``, memoized on the node.
+
+    Thirty-odd per-file checks each walk the whole module; on the benchmark
+    corpus that walk is more than half the scan time. The list is stored on
+    the node object itself (``ast`` nodes accept arbitrary attributes and
+    neither ``_fields`` traversal nor ``unparse`` sees it), so it is freed
+    with the tree and cannot go stale unless the tree is mutated after the
+    first walk — which no check does.
+    """
+    cached = getattr(node, "_spaghetti_walk", None)
+    if cached is None:
+        cached = list(ast.walk(node))
+        node._spaghetti_walk = cached  # type: ignore[attr-defined]
+    return cached

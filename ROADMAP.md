@@ -244,6 +244,22 @@ pending (Phases 3 and 4 together).
 Acceptance: benchmark table committed and CI-enforced; fuzzers run 10 minutes per PR
 with no crash; conformance diff is empty on the corpus.
 
+*Status 2026-11-13 (Python, version 2.3.0):* benchmark table in `docs/benchmark.md` from
+`scripts/bench.py` over the pinned corpus (`scripts/corpus.lock`: django, pandas, airflow,
+1.07 M lines, 3144 files): Python 81.6 s cold / 20.1 s with a warm `--cache`, Rust 8.2 s, on an
+11-core laptop. pandas alone is 79 s in one process, so the combined time is pandas' time and
+the 90 s budget is tight on a 4-core runner; CI enforces it with `--budget 90`. Memoizing the
+whole-tree walk shared by the per-file checks cut Python time by a third with byte-identical
+output. Incremental cache (`spaghetti.cache`, `--cache`/`--cache-dir`, `cache`/`cache-dir`
+settings) keyed by content hash under a settings+version key. Robustness: `tests/test_fuzz.py`
+(hypothesmith programs + arbitrary text, never raises; CI fuzz job ≈ 10 min), `max-file-bytes`
+(1 MiB) and a recursion guard emit `scan-limit` instead of stalling or crashing; the sweep
+found and fixed a crash on a lone-surrogate string annotation (pandas). Conformance:
+`scripts/conformance.py --rust BIN` over the whole corpus; it is clean on the five audit repos
+and this tree, and on django/airflow it exposed five Rust deviations (twin-pair naming and
+ratio, a long-function flat-nesting case, untyped-dict order and three misses, one
+deep-nesting case) now queued for the Rust port, whose CI will run the script per PR.
+
 ## 4. Decisions (resolved 2026-11-13: yes to all four)
 
 All four accepted as recommended. Recorded here so the phases above can assume them.

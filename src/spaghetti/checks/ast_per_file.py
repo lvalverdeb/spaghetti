@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import warnings
 from collections import defaultdict
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -20,6 +21,9 @@ from spaghetti.ast_helpers import (
     _nesting_depth,
     _param_has_type_hint,
 )
+from spaghetti.ast_helpers import (
+    walk as _walk,
+)
 from spaghetti.config import DUNDER_RE as _DUNDER_RE
 from spaghetti.metrics import cognitive_complexity, cyclomatic_complexity
 from spaghetti.models import Issue, Severity
@@ -35,7 +39,7 @@ FileCheck = Callable[[ast.Module, Path, str], list[Issue]]
 
 def check_long_functions(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
     issues: list[Issue] = []
-    for node in ast.walk(tree):
+    for node in _walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             lines = _line_count(node)
             if (
@@ -65,7 +69,7 @@ def check_long_functions(tree: ast.Module, filepath: Path, pkg: str) -> list[Iss
 
 def check_complexity(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
     issues: list[Issue] = []
-    for node in ast.walk(tree):
+    for node in _walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             cc = cyclomatic_complexity(node)
             if cc > _cfg.COMPLEXITY_THRESHOLD:
@@ -91,7 +95,7 @@ def check_cognitive_complexity(tree: ast.Module, filepath: Path, pkg: str) -> li
     """Sonar cognitive complexity: how hard a function is to *read*, dominated by
     nesting. Cyclomatic is what CI gates on; this is what reviews argue about."""
     issues: list[Issue] = []
-    for node in ast.walk(tree):
+    for node in _walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             score = cognitive_complexity(node)
             if score > _cfg.COGNITIVE_COMPLEXITY_THRESHOLD:
@@ -143,7 +147,7 @@ def low_maintainability_issue(mi: float, filepath: Path, pkg: str) -> list[Issue
 
 def check_missing_types(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
     issues: list[Issue] = []
-    for node in ast.walk(tree):
+    for node in _walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             if _is_private(node.name) or _is_test_function(node.name) or _is_test_file(filepath):
                 continue
@@ -194,7 +198,7 @@ def _required_positional_params(node: ast.FunctionDef | ast.AsyncFunctionDef) ->
 
 def check_excessive_params(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
     issues: list[Issue] = []
-    for node in ast.walk(tree):
+    for node in _walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             total = len(_required_positional_params(node))
             if total > _cfg.MAX_FUNC_PARAMS:
@@ -222,7 +226,7 @@ def check_excessive_params(tree: ast.Module, filepath: Path, pkg: str) -> list[I
 def check_excessive_returns(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
     """Many exit points in one function make control flow harder to trace."""
     issues: list[Issue] = []
-    for node in ast.walk(tree):
+    for node in _walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             n_returns = _count_nested_returns(node)
             if n_returns > _cfg.MAX_RETURNS:
@@ -252,7 +256,7 @@ def check_boolean_flag_params(tree: ast.Module, filepath: Path, pkg: str) -> lis
     number of behaviors it has to support (2^N combinations) and read as
     ``f(x, True, False)`` at call sites."""
     issues: list[Issue] = []
-    for node in ast.walk(tree):
+    for node in _walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             flags: list[str] = []
             pos_args = node.args.args
@@ -290,7 +294,7 @@ def check_boolean_flag_params(tree: ast.Module, filepath: Path, pkg: str) -> lis
 
 def check_deep_nesting(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
     issues: list[Issue] = []
-    for node in ast.walk(tree):
+    for node in _walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             depth = _nesting_depth(node)
             if depth > _cfg.MAX_NESTING_DEPTH:
@@ -347,7 +351,7 @@ def _annotation_of(node: ast.AST) -> ast.AST | None:
 def check_untyped_dicts(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
     """Find bare `dict` without type parameters in annotations via AST inspection."""
     issues: list[Issue] = []
-    for node in ast.walk(tree):
+    for node in _walk(tree):
         annotation = _annotation_of(node)
         if annotation is None:
             continue
@@ -380,7 +384,7 @@ def _collect_imported_names(tree: ast.Module) -> dict[str, int]:
     line it was imported on. ``*`` and ``__future__`` imports don't bind a
     real name; ``_`` is the conventional "I don't care about this" sink."""
     imported: dict[str, int] = {}
-    for node in ast.walk(tree):
+    for node in _walk(tree):
         if isinstance(node, ast.Import):
             bound = (_bound_name(alias, split_dotted=True) for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module != "__future__":
@@ -409,17 +413,23 @@ def _names_in_string_annotation(text: str) -> set[str]:
     if not text or len(text) > 200 or "\n" in text:
         return set()
     try:
-        expr = ast.parse(text, mode="eval")
-    except SyntaxError:
+        with warnings.catch_warnings():
+            # A regex or path string parsed as a forward reference emits
+            # SyntaxWarnings ("invalid escape sequence") that are not ours to show.
+            warnings.simplefilter("ignore", SyntaxWarning)
+            expr = ast.parse(text, mode="eval")
+    except (SyntaxError, ValueError):
+        # ValueError covers a string literal with a lone surrogate escape
+        # ("\ud83d"), which ast.parse cannot encode (seen in pandas).
         return set()
-    return {n.id for n in ast.walk(expr) if isinstance(n, ast.Name)}
+    return {n.id for n in _walk(expr) if isinstance(n, ast.Name)}
 
 
 def _collect_used_names(tree: ast.Module) -> set[str]:
     """Every name referenced by the module — either directly, or listed in
     an ``__all__ = [...]`` re-export declaration."""
     used: set[str] = set()
-    for node in ast.walk(tree):
+    for node in _walk(tree):
         if isinstance(node, ast.Name):
             used.add(node.id)
         elif isinstance(node, ast.Constant) and isinstance(node.value, str):
@@ -489,7 +499,7 @@ def check_swallowed_exceptions(
     """
     source_lines = source.splitlines()
     issues: list[Issue] = []
-    for node in ast.walk(tree):
+    for node in _walk(tree):
         if not isinstance(node, ast.ExceptHandler):
             continue
         if _has_comment(source_lines, node.lineno, node.end_lineno):
@@ -529,7 +539,7 @@ def check_duplicate_branches(tree: ast.Module, filepath: Path, pkg: str) -> list
     """An if/else whose two branches are structurally identical means the
     condition has no effect."""
     issues: list[Issue] = []
-    for node in ast.walk(tree):
+    for node in _walk(tree):
         if not isinstance(node, ast.If) or not node.orelse:
             continue
         if len(node.orelse) == 1 and isinstance(node.orelse[0], ast.If):
@@ -665,7 +675,7 @@ def check_encapsulation_violations(tree: ast.Module, filepath: Path, pkg: str) -
         cls.name: _self_attrs_assigned(
             [n for n in cls.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
         )
-        for cls in ast.walk(tree)
+        for cls in _walk(tree)
         if isinstance(cls, ast.ClassDef)
     }
 
@@ -715,7 +725,7 @@ def _self_attrs_assigned(methods: list[ast.FunctionDef | ast.AsyncFunctionDef]) 
     return {
         sub.attr
         for method in methods
-        for sub in ast.walk(method)
+        for sub in _walk(method)
         if isinstance(sub, ast.Attribute)
         and isinstance(sub.ctx, ast.Store)
         and isinstance(sub.value, ast.Name)
@@ -743,7 +753,7 @@ def check_god_class(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
     complexity across its methods (WMC — Weighted Methods per Class) even if
     the method/attribute counts alone stay under threshold."""
     issues: list[Issue] = []
-    for node in ast.walk(tree):
+    for node in _walk(tree):
         if not isinstance(node, ast.ClassDef):
             continue
         methods = [n for n in node.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
@@ -800,9 +810,9 @@ def _method_self_attrs(method: ast.FunctionDef | ast.AsyncFunctionDef) -> set[st
     a different private helper aren't "connected" by shared state just
     because both happen to reference *some* attribute of ``self``.
     """
-    call_targets = {id(sub.func) for sub in ast.walk(method) if isinstance(sub, ast.Call)}
+    call_targets = {id(sub.func) for sub in _walk(method) if isinstance(sub, ast.Call)}
     attrs: set[str] = set()
-    for sub in ast.walk(method):
+    for sub in _walk(method):
         if (
             isinstance(sub, ast.Attribute)
             and isinstance(sub.value, ast.Name)
@@ -925,7 +935,7 @@ def check_low_cohesion(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue
     still isn't real field access.
     """
     issues: list[Issue] = []
-    for node in ast.walk(tree):
+    for node in _walk(tree):
         if (
             not isinstance(node, ast.ClassDef)
             or _lazy_class_is_exempt(node)
@@ -991,7 +1001,7 @@ def check_layer_violations(tree: ast.Module, filepath: Path, pkg: str) -> list[I
     if not forbidden:
         return []
     issues: list[Issue] = []
-    for node in ast.walk(tree):
+    for node in _walk(tree):
         imported = _imported_module(node)
         for prefix in forbidden:
             if imported is not None and imported.startswith(prefix):
@@ -1036,7 +1046,7 @@ def check_transport_in_library(tree: ast.Module, filepath: Path, pkg: str) -> li
     issues: list[Issue] = []
     transport_modules = _cfg.TRANSPORT_MODULES
 
-    for node in ast.walk(tree):
+    for node in _walk(tree):
         if isinstance(node, ast.ImportFrom) and node.module:
             top = node.module.split(".")[0]
             if top in transport_modules:
@@ -1076,7 +1086,7 @@ def check_circular_imports(tree: ast.Module, filepath: Path, pkg: str) -> list[I
     module_name = filepath.relative_to(pkg_root.parent).with_suffix("")
     parts = list(module_name.parts)
 
-    for node in ast.walk(tree):
+    for node in _walk(tree):
         if isinstance(node, ast.ImportFrom) and node.module:
             imp_parts = node.module.split(".")
             if len(imp_parts) < len(parts) and parts[: len(imp_parts)] == imp_parts:
@@ -1108,7 +1118,7 @@ def check_mutable_defaults(tree: ast.Module, filepath: Path, pkg: str) -> list[I
     issues: list[Issue] = []
     mutable_types = (ast.List, ast.Dict, ast.Set)
 
-    for node in ast.walk(tree):
+    for node in _walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             for default in node.args.defaults + node.args.kw_defaults:
                 if default is not None and isinstance(default, mutable_types):
@@ -1132,7 +1142,7 @@ def check_mutable_defaults(tree: ast.Module, filepath: Path, pkg: str) -> list[I
 def check_bare_except(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
     """Detect bare except clauses."""
     issues: list[Issue] = []
-    for node in ast.walk(tree):
+    for node in _walk(tree):
         if isinstance(node, ast.ExceptHandler) and node.type is None:
             issues.append(
                 Issue(
@@ -1156,7 +1166,7 @@ def check_star_imports(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue
     if filepath.name == "__init__.py":
         return []
     issues: list[Issue] = []
-    for node in ast.walk(tree):
+    for node in _walk(tree):
         if isinstance(node, ast.ImportFrom):
             for alias in node.names:
                 if alias.name == "*":
@@ -1286,7 +1296,7 @@ def check_scope_mutations(tree: ast.Module, filepath: Path, pkg: str) -> list[Is
     ``global`` declaration followed by an assignment."""
     issues: list[Issue] = []
 
-    for func_node in ast.walk(tree):
+    for func_node in _walk(tree):
         if not isinstance(func_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
 
@@ -1348,7 +1358,7 @@ def check_dead_code(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
             package=pkg,
             message="statement is unreachable — previous line always terminates",
         )
-        for node in ast.walk(tree)
+        for node in _walk(tree)
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         for block in _function_blocks(node)
         for stmt in _unreachable_statements(block)
@@ -1413,7 +1423,7 @@ def check_message_chains(tree: ast.Module, filepath: Path, pkg: str) -> list[Iss
         return 0
 
     def _scan(node: ast.AST) -> None:
-        for child in ast.walk(node):
+        for child in _walk(node):
             if isinstance(child, ast.Attribute) or isinstance(child, ast.Call):
                 depth = _chain_depth(child)
                 if depth > _cfg.MAX_MESSAGE_CHAIN_DEPTH:
@@ -1442,7 +1452,7 @@ def check_message_chains(tree: ast.Module, filepath: Path, pkg: str) -> list[Iss
 def check_excessive_decorators(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
     """Flag functions or classes with more than _cfg.MAX_DECORATORS decorators."""
     issues: list[Issue] = []
-    for node in ast.walk(tree):
+    for node in _walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             n_decorators = len(node.decorator_list)
             if n_decorators > _cfg.MAX_DECORATORS:
@@ -1516,20 +1526,17 @@ def check_magic_numbers(tree: ast.Module, source: str, filepath: Path, pkg: str)
         if func.name == "__init__":
             return
         keyword_value_ids = {
-            id(kw.value)
-            for stmt in func.body
-            for kw in ast.walk(stmt)
-            if isinstance(kw, ast.keyword)
+            id(kw.value) for stmt in func.body for kw in _walk(stmt) if isinstance(kw, ast.keyword)
         }
         for stmt in func.body:
-            for child in ast.walk(stmt):
+            for child in _walk(stmt):
                 if not (isinstance(child, ast.Constant) and isinstance(child.value, (int, float))):
                     continue
                 if id(child) in keyword_value_ids or child.value in _ALLOWED:
                     continue
                 candidates.append((child, _magic_number_display(source, child)))
 
-    for node in ast.walk(tree):
+    for node in _walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             _scan_func(node)
 
@@ -1649,7 +1656,7 @@ def check_magic_strings(tree: ast.Module, filepath: Path, pkg: str) -> list[Issu
 
     comparisons: list[tuple[str, int]] = []
 
-    for node in ast.walk(tree):
+    for node in _walk(tree):
         if not isinstance(node, ast.Compare):
             continue
         result = _magic_string_comparison(node)
@@ -1737,7 +1744,7 @@ def check_missing_else(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue
     """
     issues: list[Issue] = []
 
-    for node in ast.walk(tree):
+    for node in _walk(tree):
         if not isinstance(node, ast.If):
             continue
         if node.orelse:
@@ -1891,7 +1898,7 @@ def check_lazy_class(tree: ast.Module, filepath: Path, pkg: str) -> list[Issue]:
     ``_lazy_class_is_exempt``.
     """
     issues: list[Issue] = []
-    for node in ast.walk(tree):
+    for node in _walk(tree):
         if not isinstance(node, ast.ClassDef):
             continue
         if _lazy_class_is_exempt(node):
@@ -1938,11 +1945,11 @@ def check_deep_inheritance(tree: ast.Module, filepath: Path, pkg: str) -> list[I
     # Indexed once so the BFS below does O(1) name lookups instead of
     # re-walking the whole module tree for every ancestor it discovers.
     classes_by_name: dict[str, list[ast.ClassDef]] = defaultdict(list)
-    for node in ast.walk(tree):
+    for node in _walk(tree):
         if isinstance(node, ast.ClassDef):
             classes_by_name[node.name].append(node)
 
-    for node in ast.walk(tree):
+    for node in _walk(tree):
         if not isinstance(node, ast.ClassDef):
             continue
         if not node.bases:
@@ -2083,7 +2090,7 @@ def check_pass_through_methods(tree: ast.Module, filepath: Path, pkg: str) -> li
     """Detect methods that do nothing but delegate to another function."""
     issues: list[Issue] = []
 
-    for node in ast.walk(tree):
+    for node in _walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         if node.name.startswith("__") and node.name.endswith("__"):

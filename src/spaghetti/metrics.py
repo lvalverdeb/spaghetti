@@ -15,6 +15,8 @@ from collections.abc import Callable, Iterator
 from io import StringIO
 from typing import Any
 
+from spaghetti.ast_helpers import walk as _walk
+
 __all__ = [
     "cyclomatic_complexity",
     "cognitive_complexity",
@@ -330,7 +332,7 @@ def _logical_lines(tree: ast.Module) -> int:
     one for each header line that is not itself a statement — decorators,
     ``else:``, ``except ...:``, ``finally:`` and ``case ...:``."""
     count = 0
-    for node in ast.walk(tree):
+    for node in _walk(tree):
         if isinstance(node, ast.stmt):
             count += 1
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
@@ -359,7 +361,7 @@ def _comment_lines(source: str) -> set[int]:
 
 
 def _string_statements(tree: ast.Module) -> Iterator[ast.Expr]:
-    for node in ast.walk(tree):
+    for node in _walk(tree):
         if (
             isinstance(node, ast.Expr)
             and isinstance(node.value, ast.Constant)

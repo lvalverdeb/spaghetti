@@ -66,6 +66,9 @@ class ScanConfig:
     twin_similarity: float
     recursive: bool = True
     min_clone_tokens: int = 50
+    cache_dir: Path | None = None
+    """Root of the incremental per-file cache (see ``spaghetti.cache``); ``None`` disables it."""
+    cache_key: str = ""
 
 
 @dataclass
@@ -85,6 +88,8 @@ class ScanResult:
 
     file_mi: dict[Path, float] = field(default_factory=dict)
     """Maintainability Index per parsed file (see ``metrics.maintainability_index``)."""
+    cache_hits: int = 0
+    cache_misses: int = 0
     raw_imports: dict[Path, list[RawImport]] = field(default_factory=dict)
     """Transport from worker to parent for the workspace-level import graph; cleared after use."""
     token_streams: dict[Path, TokenStream] = field(default_factory=dict)
@@ -99,6 +104,8 @@ class ScanResult:
         self.suppressed += other.suppressed
         self.ignored.extend(other.ignored)
         self.file_mi.update(other.file_mi)
+        self.cache_hits += other.cache_hits
+        self.cache_misses += other.cache_misses
 
     @property
     def maintainability_index(self) -> float | None:

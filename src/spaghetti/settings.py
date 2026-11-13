@@ -12,6 +12,8 @@ Recognised keys (kebab-case in the file)::
     fail-on = "error"                       # error | warning | info | never
     baseline = ".spaghetti-baseline.json"   # relative to the settings file
     snapshot-store = ".spaghetti/snapshots.jsonl"  # relative to the settings file
+    cache = true                            # incremental per-file cache (--cache)
+    cache-dir = ".spaghetti/cache"          # relative to the settings file
 
     [[tool.spaghetti.contracts]]            # architecture contracts, see spaghetti.contracts
     name = "domain stays framework-free"
@@ -84,6 +86,8 @@ class Settings:
     fail_on: str | None = None
     baseline: Path | None = None
     snapshot_store: Path | None = None
+    cache: bool | None = None
+    cache_dir: Path | None = None
     contracts: list[Contract] = field(default_factory=list)
     packages: dict[str, Path] = field(default_factory=dict)
     sources: list[Path] = field(default_factory=list)
@@ -101,6 +105,8 @@ class Settings:
             snapshot_store=(
                 other.snapshot_store if other.snapshot_store is not None else self.snapshot_store
             ),
+            cache=other.cache if other.cache is not None else self.cache,
+            cache_dir=other.cache_dir if other.cache_dir is not None else self.cache_dir,
             contracts=[*self.contracts, *other.contracts],
             packages={**self.packages, **other.packages},
             sources=[*self.sources, *other.sources],
@@ -156,6 +162,8 @@ _SCALAR_KEYS = {
     "fail-on",
     "baseline",
     "snapshot-store",
+    "cache",
+    "cache-dir",
     "library-packages",
     "packages",
     "contracts",
@@ -179,14 +187,13 @@ def parse_mapping(data: dict[str, Any], *, origin: Path) -> Settings:
         if fail_on not in FAIL_ON_CHOICES:
             raise SettingsError(f"{origin}: fail-on must be one of {', '.join(FAIL_ON_CHOICES)}")
         s.fail_on = fail_on
-    if (baseline := data.get("baseline")) is not None:
-        if not isinstance(baseline, str):
-            raise SettingsError(f"{origin}: baseline must be a path string")
-        s.baseline = (base_dir / baseline).resolve()
-    if (store := data.get("snapshot-store")) is not None:
-        if not isinstance(store, str):
-            raise SettingsError(f"{origin}: snapshot-store must be a path string")
-        s.snapshot_store = (base_dir / store).resolve()
+    if (cache := data.get("cache")) is not None:
+        if not isinstance(cache, bool):
+            raise SettingsError(f"{origin}: cache must be true or false")
+        s.cache = cache
+    s.baseline = _path_setting(data, "baseline", origin)
+    s.cache_dir = _path_setting(data, "cache-dir", origin)
+    s.snapshot_store = _path_setting(data, "snapshot-store", origin)
     packages = data.get("packages", {})
     if not isinstance(packages, dict) or not all(isinstance(v, str) for v in packages.values()):
         raise SettingsError(f"{origin}: packages must map names to path strings")
@@ -199,6 +206,16 @@ def parse_mapping(data: dict[str, Any], *, origin: Path) -> Settings:
     s.rules = _parse_rules(data.get("rules", {}), origin)
     s.layers = _parse_layers(data.get("layers", {}), origin)
     return s
+
+
+def _path_setting(data: dict[str, Any], key: str, origin: Path) -> Path | None:
+    """An optional path-valued key, resolved against the settings file's directory."""
+    value = data.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise SettingsError(f"{origin}: {key} must be a path string")
+    return (origin.parent / value).resolve()
 
 
 def _str_list(value: Any, origin: Path, key: str) -> list[str]:

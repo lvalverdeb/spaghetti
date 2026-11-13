@@ -406,6 +406,14 @@ RULE_DOCS: dict[str, RuleDoc] = {
         "run spaghetti on that interpreter.",
         "Pylint E0001 syntax-error",
     ),
+    "scan-limit": _d(
+        "A file over the size limit or nested past the interpreter's recursion limit is "
+        "almost always generated code or data; analysing it would cost minutes and say "
+        "nothing about the hand-written code around it.",
+        "Exclude generated files with `exclude`, or raise `max-file-bytes` if the file "
+        "is genuinely hand-written. Nothing in it was checked.",
+        thresholds=("MAX_FILE_BYTES",),
+    ),
     "unreadable-file": _d(
         "A file that cannot be read (permissions, invalid encoding) is a blind spot in "
         "every report.",

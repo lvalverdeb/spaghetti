@@ -17,6 +17,9 @@ from spaghetti.ast_helpers import (
     _loc,
     _walk_with_class_context,
 )
+from spaghetti.ast_helpers import (
+    walk as _walk,
+)
 from spaghetti.config import DUNDER_RE as _DUNDER_RE
 from spaghetti.models import Issue, _display_path
 
@@ -144,7 +147,7 @@ def check_duplicate_functions_pkg(
     groups: dict[str, list[tuple[Path, ast.FunctionDef | ast.AsyncFunctionDef]]] = defaultdict(list)
 
     for filepath, tree in files:
-        for node in ast.walk(tree):
+        for node in _walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
             if _line_count(node) < min_lines or _is_trivial_body(node):
@@ -271,7 +274,7 @@ def check_orphan_interfaces_pkg(pkg_name: str, files: list[tuple[Path, ast.Modul
     interfaces: dict[str, tuple[Path, ast.ClassDef]] = {}
     implementations: dict[str, list[str]] = defaultdict(list)
     for filepath, tree in files:
-        for node in ast.walk(tree):
+        for node in _walk(tree):
             if not isinstance(node, ast.ClassDef):
                 continue
             base_names = _base_names_of(node)

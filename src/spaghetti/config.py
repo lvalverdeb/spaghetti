@@ -60,6 +60,8 @@ MIN_CLONE_TOKENS = 50
 MIN_MAINTAINABILITY_INDEX = 10
 # git history window for change-frequency (hotspots, churn-weighted plan).
 HOTSPOT_WINDOW_MONTHS = 6
+# Files larger than this are not analysed (a `scan-limit` info finding is emitted instead).
+MAX_FILE_BYTES = 1_048_576
 MAX_CLASS_METHODS = 25
 MAX_CLASS_ATTRS = 20
 MIN_BOOLEAN_FLAGS = 3
