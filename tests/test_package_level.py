@@ -7,6 +7,7 @@ import ast
 from pathlib import Path
 
 from spaghetti import detector as ds
+from spaghetti.checks.package_level import check_sync_async_twins_pkg
 from spaghetti.checks.workspace_level import (
     build_import_graph,
     check_import_cycles_ws,
@@ -188,3 +189,31 @@ def test_check_sync_async_twins_skips_short_functions(tmp_path: Path):
 
     issues = ds.check_sync_async_twins_pkg(pkg_name, files, min_ratio=0.6)
     assert issues == []
+
+
+def test_sync_async_twins_reported_once_per_class(tmp_path: Path):
+    body = (
+        "class Request:\n"
+        "    def read(self):\n"
+        "        a = self.stream.read()\n"
+        "        b = self.decode(a)\n"
+        "        return b\n"
+        "    async def aread(self):\n"
+        "        a = await self.stream.aread()\n"
+        "        b = self.decode(a)\n"
+        "        return b\n"
+        "class Response:\n"
+        "    def read(self):\n"
+        "        a = self.stream.read()\n"
+        "        b = self.decode(a)\n"
+        "        return b\n"
+        "    async def aread(self):\n"
+        "        a = await self.stream.aread()\n"
+        "        b = self.decode(a)\n"
+        "        return b\n"
+    )
+    path = tmp_path / "m.py"
+    path.write_text(body)
+    tree = ast.parse(body)
+    issues = check_sync_async_twins_pkg("pkg", [(path, tree)], 0.6)
+    assert [i.line for i in issues if i.rule == "sync-async-duplication"] == [2, 11]

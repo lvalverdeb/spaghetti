@@ -213,10 +213,12 @@ def check_sync_async_twins_pkg(
                 )
 
     issues: list[Issue] = []
-    reported: set[frozenset[str]] = set()
-    for (filepath, _class_name), by_name in scope_functions.items():
+    reported: set[frozenset[tuple[str, str]]] = set()
+    for (filepath, class_name), by_name in scope_functions.items():
         for name, candidate in _twin_pairs(by_name):
-            pair_key = frozenset({name, candidate})
+            # The class is part of the key: Request.read/aread and Response.read/aread
+            # in one file are two twin pairs, not one.
+            pair_key = frozenset({(name, class_name or ""), (candidate, class_name or "")})
             if pair_key in reported:
                 continue
             node, other_node = by_name[name][0], by_name[candidate][0]
