@@ -26,7 +26,15 @@ class DiffError(RuntimeError):
 
 def _git(cwd: Path, *args: str) -> str:
     try:
-        proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=False)
+        # core.quotePath=false: otherwise a non-ASCII path appears in the diff
+        # header quoted and octal-escaped and never matches a scanned file.
+        proc = subprocess.run(
+            ["git", "-c", "core.quotePath=false", *args],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
     except FileNotFoundError as exc:
         raise DiffError("git executable not found") from exc
     if proc.returncode != 0:
@@ -48,9 +56,11 @@ def changed_lines(base_ref: str, cwd: Path) -> dict[Path, set[int]]:
 def parse_unified_diff(diff: str, toplevel: Path) -> dict[Path, set[int]]:
     changed: dict[Path, set[int]] = {}
     current: Path | None = None
-    for line in diff.splitlines():
+    for line in diff.split("\n"):  # not splitlines(): paths may contain U+2028 etc.
+        line = line.rstrip("\r")
         if line.startswith("+++ "):
-            target = line[4:]
+            # git appends "\t" after a path that contains whitespace.
+            target = line[4:].rstrip("\t")
             if target == "/dev/null":
                 current = None
                 continue

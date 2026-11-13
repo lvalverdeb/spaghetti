@@ -73,3 +73,12 @@ def test_file_churn_sees_non_ascii_paths(repo: Path):
     _git(repo, "commit", "-qm", "non-ascii")
     churn = file_churn([repo / "pkg"], months=6)
     assert churn[odd.resolve()] == Churn(commits=1, authors=1)
+
+
+def test_file_churn_sees_paths_with_unicode_line_separators(repo: Path):
+    odd = repo / "pkg" / "a b.py"
+    odd.write_text("z = 1\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "u2028")
+    churn = file_churn([repo / "pkg"], months=6)
+    assert churn[odd.resolve()] == Churn(commits=1, authors=1)

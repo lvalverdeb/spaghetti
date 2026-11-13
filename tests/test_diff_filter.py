@@ -94,3 +94,17 @@ def test_changed_lines_against_a_real_repo(tmp_path: Path):
 def test_changed_lines_reports_git_failures(tmp_path: Path):
     with pytest.raises(DiffError):
         changed_lines("HEAD", tmp_path)  # not a repository
+
+
+def test_changed_lines_sees_non_ascii_paths(tmp_path: Path):
+    repo = tmp_path / "repo"
+    (repo / "pkg").mkdir(parents=True)
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "t@example.com")
+    _git(repo, "config", "user.name", "t")
+    target = repo / "pkg" / "café  x.py"
+    target.write_text("a = 1\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "init")
+    target.write_text("a = 1\nb = 2\n")
+    assert changed_lines("HEAD", repo / "pkg") == {target.resolve(): {2}}

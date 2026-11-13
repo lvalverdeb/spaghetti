@@ -59,7 +59,10 @@ def file_churn(roots: list[Path], *, months: int) -> dict[Path, Churn]:
     commits: dict[Path, int] = {}
     authors: dict[Path, set[str]] = {}
     author = ""
-    for line in log.splitlines():
+    # Split on "\n" only: str.splitlines() also breaks at U+2028/U+2029/U+0085
+    # and \v/\f, which a path may contain.
+    for line in log.split("\n"):
+        line = line.rstrip("\r")
         if line.startswith("\x00"):
             author = line[1:]
             continue
