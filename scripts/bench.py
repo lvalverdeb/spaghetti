@@ -3,7 +3,7 @@
 
     uv run python scripts/bench.py                        # Python binary, print the table
     uv run python scripts/bench.py --rust ../spaghetti-rs/target/release/spaghetti
-    uv run python scripts/bench.py --budget 90            # exit 1 if the combined Python run is slower
+    uv run python scripts/bench.py --runs 2 --budget 120  # exit 1 if the combined Python run is slower
     uv run python scripts/bench.py --write docs/benchmark.md
 
 The corpus (django, pandas, airflow; see scripts/corpus.lock) is checked out
@@ -167,9 +167,10 @@ def _render(rows: list[dict], args, repos: list[Repo]) -> str:
         lines.append("| " + " | ".join(cells) + " |")
     lines += [
         "",
-        "Budget (ROADMAP Phase 5): the *all three* row under 90 s for Python and 15 s for Rust "
-        "on the 4-core GitHub runner, which is about 1.7× slower per core than the laptop above. "
-        "CI enforces the budgets with `--budget 90` and `--rust-budget 15`.",
+        "Budget (ROADMAP Phase 5): the *all three* row under 120 s for Python and 15 s for Rust "
+        "on the 4-core GitHub runner, best of two runs. The same commit measured 61 s and 100 s "
+        "there on consecutive days, so the budget is a regression guard with headroom for runner "
+        "noise, not a target. CI enforces it with `--runs 2 --budget 120` and `--rust-budget 15`.",
         "",
     ]
     return "\n".join(lines)

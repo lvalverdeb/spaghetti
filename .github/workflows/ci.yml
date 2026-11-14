@@ -114,5 +114,5 @@ jobs:
           path: .spaghetti/corpus
           key: corpus-${{ hashFiles('scripts/corpus.lock') }}
 
-      - name: Python port under 90 s on the combined corpus
-        run: uv run python scripts/bench.py --budget 90
+      - name: Python port under 120 s on the combined corpus (best of 2)
+        run: uv run python scripts/bench.py --runs 2 --budget 120
