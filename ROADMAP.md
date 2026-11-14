@@ -6,7 +6,9 @@
 > on the shortlist without embarrassment, and pick it for the things it does that they
 > do not.
 
-Drafted 2026-11-13 against spaghetti 1.4.0 / spaghetti-rs 1.4.1. Companion to
+Drafted 2026-11-13 against spaghetti 1.4.0 / spaghetti-rs 1.4.1; all six phases shipped by
+2026-11-14 and published as spaghetti-detector 2.6.0 (PyPI) and spaghetti 2.6.1 (crates.io,
+prebuilt binaries on GitHub). Companion to
 [SDD.md](SDD.md) (what the rules are) and
 [RUST_PORT_PROPOSAL.md](RUST_PORT_PROPOSAL.md) (why there are two implementations).
 
@@ -270,7 +272,18 @@ found and fixed a crash on a lone-surrogate string annotation (pandas). Conforma
 `scripts/conformance.py --rust BIN` over the whole corpus; it is clean on the five audit repos
 and this tree, and on django/airflow it exposed five Rust deviations (twin-pair naming and
 ratio, a long-function flat-nesting case, untyped-dict order and three misses, one
-deep-nesting case) now queued for the Rust port, whose CI will run the script per PR.
+deep-nesting case), all since fixed in the Rust port, whose CI runs the script on every push.
+A later sweep of 37 private repositories (576 k lines) with both ports at 2.6.0 found one more
+Rust deviation: CPython starts the generator in `f(x for x in y)` at the call's `(`, rustpython
+at `x`, so a duplicate-code range began a line late when the call broke after `(`. Fixed and
+shipped as spaghetti-rs 2.6.1; all 37 repositories are byte-identical since.
+
+*Published 2026-11-14:* spaghetti-detector 2.6.0 on PyPI (`make publish`; the trusted-publisher
+workflow in `publish.yml` still needs its PyPI side configured), spaghetti 2.6.1 on crates.io,
+and prebuilt binaries plus shell/PowerShell installers for five targets on the spaghetti-rs GitHub
+release (cargo-dist; the Apple Silicon build moved to `macos-15` after GitHub retired `macos-14`).
+The two ports no longer share a version number: the Rust port takes patch releases for Rust-only
+fixes, and conformance, not the version string, is what ties them together.
 
 ## 4. Decisions (resolved 2026-11-13: yes to all four)
 
@@ -281,7 +294,9 @@ All four accepted as recommended. Recorded here so the phases above can assume t
   binaries in GitHub releases). The Python port stays as the readable reference
   implementation and the conformance oracle, and is where new rules are prototyped.
   Every phase above assumes this. The alternative, keeping both at full parity as
-  products, roughly doubles Phases 1–4.
+  products, roughly doubles Phases 1–4. *Status:* `cargo install spaghetti` and the
+  GitHub-release installers ship; no `maturin` wheel was built, so the PyPI package is the
+  Python port itself.
 - **D2. Python runtime floor → 3.11.** 3.10 adds `match` already; 3.9 would
   mean giving up `|` union syntax throughout. If D1 is accepted, this only affects the
   reference implementation and contributors.
@@ -317,3 +332,6 @@ All four accepted as recommended. Recorded here so the phases above can assume t
 
 Roughly five to six months of focused single-developer work to the end of Phase 4.
 Phase 5 is where the project then lives.
+
+All six phases shipped on 2026-11-13 and 2026-11-14, published as spaghetti-detector 2.6.0
+(PyPI) and spaghetti 2.6.1 (crates.io, GitHub release binaries).
