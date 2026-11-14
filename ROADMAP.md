@@ -259,7 +259,11 @@ each file's findings are finalized in the worker, and the parent never re-parses
 indexes only recurring window hashes. pandas with 4 workers: 32.7 s → 19.7 s cold, 17.9 s → 3.9 s
 warm. Incremental cache (`spaghetti.cache`, `--cache`/`--cache-dir`, `cache`/`cache-dir`
 settings) keyed by content hash under a settings+version key; entries hold the facts, so a hit
-needs no parse. Robustness: `tests/test_fuzz.py`
+needs no parse. 2.6.0 closes the nesting gap noted at 2.3.0: depth is counted as the code is
+indented (`async for`/`async with`, `try*`, `match` and `case` add a level; `elif`, `except`,
+`else`, `finally` do not — `except` used to add a level on top of `try`, and every `elif` counted
+as a nested `if`). Corpus: deep-nesting 179 → 49, excessive-returns 85 → 51, and long-function
+712 → 593 through its flat-nesting exemption. Robustness: `tests/test_fuzz.py`
 (hypothesmith programs + arbitrary text, never raises; CI fuzz job ≈ 10 min), `max-file-bytes`
 (1 MiB) and a recursion guard emit `scan-limit` instead of stalling or crashing; the sweep
 found and fixed a crash on a lone-surrogate string annotation (pandas). Conformance:

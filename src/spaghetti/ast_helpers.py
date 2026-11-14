@@ -6,15 +6,49 @@ import ast
 from collections.abc import Iterator
 from pathlib import Path
 
+# Compound statements whose body is indented one level deeper than they are.
+# ``match`` and each ``case`` both count: a case body sits two levels inside
+# the enclosing block. ``except``/``else``/``finally`` bodies are siblings of
+# the ``try`` body, and an ``elif`` is a sibling of its ``if``, so neither adds
+# a level — see ``_child_depth``.
+_NESTING_NODES = (
+    ast.If,
+    ast.For,
+    ast.AsyncFor,
+    ast.While,
+    ast.With,
+    ast.AsyncWith,
+    ast.Try,
+    getattr(ast, "TryStar", ast.Try),
+    ast.Match,
+    ast.match_case,
+)
+
+
+def _child_depth(parent: ast.AST, child: ast.AST, current: int) -> int:
+    """Nesting depth of ``child``'s own body given that ``parent``'s body is
+    at ``current``: one deeper for a compound statement, the same for an
+    ``elif`` or anything else. An ``elif`` is the sole ``orelse`` of its
+    ``if`` *and* starts in the same column; ``else:`` followed by an indented
+    ``if`` has the same tree shape but sits one column level deeper, which is
+    exactly the level the reader sees."""
+    if isinstance(child, _NESTING_NODES) and not (
+        isinstance(parent, ast.If)
+        and isinstance(child, ast.If)
+        and len(parent.orelse) == 1
+        and parent.orelse[0] is child
+        and child.col_offset == parent.col_offset
+    ):
+        return current + 1
+    return current
+
 
 def _nesting_depth(node: ast.AST, current: int = 0) -> int:
-    """Compute maximum nesting depth from a node."""
+    """Maximum block nesting depth inside ``node``: the number of indentation
+    levels a reader must carry, counting every compound statement once."""
     max_depth = current
     for child in ast.iter_child_nodes(node):
-        if isinstance(child, (ast.If, ast.For, ast.While, ast.With, ast.Try, ast.ExceptHandler)):
-            max_depth = max(max_depth, _nesting_depth(child, current + 1))
-        else:
-            max_depth = max(max_depth, _nesting_depth(child, current))
+        max_depth = max(max_depth, _nesting_depth(child, _child_depth(node, child, current)))
     return max_depth
 
 
@@ -75,18 +109,15 @@ def _file_line_count(source: str) -> int:
 def _count_nested_returns(node: ast.AST, current: int = 0) -> int:
     """Count Return statements at nesting depth >= 2 within ``node``, not
     counting returns in nested defs/lambdas. Mirrors ``_nesting_depth``'s
-    traversal — the same node types increment depth — but tallies qualifying
-    returns instead of tracking a maximum."""
+    traversal (``_child_depth``) but tallies qualifying returns instead of
+    tracking a maximum."""
     count = 0
     for child in ast.iter_child_nodes(node):
         if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
             continue
-        if isinstance(child, (ast.If, ast.For, ast.While, ast.With, ast.Try, ast.ExceptHandler)):
-            count += _count_nested_returns(child, current + 1)
-        else:
-            if isinstance(child, ast.Return) and current >= 2:
-                count += 1
-            count += _count_nested_returns(child, current)
+        if isinstance(child, ast.Return) and current >= 2:
+            count += 1
+        count += _count_nested_returns(child, _child_depth(node, child, current))
     return count
 
 

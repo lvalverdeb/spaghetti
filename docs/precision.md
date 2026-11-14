@@ -256,3 +256,25 @@ precision figure.
   false positives are migration files whose `upgrade()` bodies really are identical
   statements (`with op.batch_alter_table(...)` blocks), which the metric cannot tell from
   a copy a maintainer should factor out. The rule stays at `info`.
+
+## Addendum: nesting depth recount (2.6.0, 2026-11-14)
+
+`deep-nesting`, `excessive-returns` and `long-function`'s flat-nesting exemption share one depth
+count, which until 2.5.0 added a level for every `except` handler on top of its `try` and for
+every `elif` as if it were an `if` nested in the `else`, while ignoring `async for`, `async with`,
+`try*`, `match` and `case`. Depth now follows indentation. On the seven audit repos:
+
+| Rule | 2.5.0 | 2.6.0 |
+|---|---|---|
+| `deep-nesting` | 179 | 49 |
+| `excessive-returns` | 85 | 51 |
+| `long-function` | 712 | 593 |
+
+A seeded sample of the django findings that disappeared shows the pattern the Phase 1 audit
+had filed as "debatable, barely over threshold": `localize_input()` was reported at depth 6 and
+is a five-branch `if`/`elif` chain, depth 1; `get_db_converters()` at depth 7 is a six-branch
+chain, depth 2. The `long-function` findings that disappear are functions of 50-65 lines whose
+real depth is 2, which is exactly the exemption's definition of a flat pipeline; whether 2 is
+the right ceiling for that exemption is a threshold question (`LONG_FUNCTION_FLAT_NESTING_MAX`),
+not a counting one. The Phase 1 precision rows above were measured under the old count and are
+not restated; `deep-nesting`'s 47 % strict figure should be read as a floor.

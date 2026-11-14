@@ -95,6 +95,39 @@ def test_check_deep_nesting_flags_excessive_nesting():
     assert issues[0].rule == "deep-nesting"
 
 
+def test_nesting_depth_follows_indentation():
+    from spaghetti.ast_helpers import _count_nested_returns, _nesting_depth
+
+    def depth(body: str) -> int:
+        return _nesting_depth(_parse("async def f(x):\n" + body).body[0])
+
+    # Every compound statement adds one level, including the async forms,
+    # try*, match and case.
+    assert depth("    if x:\n        pass\n") == 1
+    assert depth("    async for a in x:\n        async with a:\n            pass\n") == 2
+    assert depth("    try:\n        pass\n    except* ValueError:\n        pass\n") == 1
+    assert depth("    match x:\n        case 1:\n            if x:\n                pass\n") == 3
+    # Siblings of a block add nothing: elif chains, except/else/finally bodies.
+    assert (
+        depth("    if x:\n        pass\n    elif x:\n        pass\n    elif x:\n        pass\n")
+        == 1
+    )
+    assert depth("    if x:\n        pass\n    else:\n        if x:\n            pass\n") == 2
+    assert (
+        depth("    try:\n        pass\n    except ValueError:\n        if x:\n            pass\n")
+        == 2
+    )
+    assert depth("    try:\n        pass\n    finally:\n        if x:\n            pass\n") == 2
+    # Nested returns use the same depth: an except body is at the try's level.
+    returns = _count_nested_returns(
+        _parse(
+            "def f(x):\n    for a in x:\n        try:\n            return 1\n"
+            "        except ValueError:\n            return 2\n        else:\n            return 3\n"
+        ).body[0]
+    )
+    assert returns == 3
+
+
 def test_check_bare_except_flags_bare_except():
     source = "def f():\n    try:\n        pass\n    except:\n        pass\n"
     issues = check_bare_except(_parse(source), Path("f.py"), "pkg")
