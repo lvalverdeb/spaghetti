@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import ast
 import difflib
+import hashlib
 from collections import defaultdict
-from collections.abc import Iterator
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import spaghetti.config as _cfg
 from spaghetti.ast_helpers import (
@@ -24,8 +26,14 @@ from spaghetti.config import DUNDER_RE as _DUNDER_RE
 from spaghetti.models import Issue, _display_path
 
 __all__ = [
+    "ClassFact",
+    "FileFacts",
+    "FunctionFact",
+    "TwinFact",
     "check_duplicate_functions_pkg",
+    "check_orphan_interfaces_pkg",
     "check_sync_async_twins_pkg",
+    "collect_facts",
 ]
 
 
@@ -133,6 +141,115 @@ def _module_level_imports(tree: ast.Module) -> list[ast.Import | ast.ImportFrom]
     return found
 
 
+# ── Per-file facts ───────────────────────────────────────────────────────────
+#
+# The package-level checks need a little about every function and class in the
+# package, never the trees themselves. A worker that has just parsed a file
+# records those facts while the tree is in hand; the parent combines facts
+# across files. Facts carry raw measurements (line counts, similarity ratios)
+# and the checks apply the thresholds, so one set of facts serves any
+# ``--min-duplicate-lines`` or ``--twin-similarity`` and can live in the file
+# cache.
+
+
+@dataclass(frozen=True)
+class FunctionFact:
+    """A function worth comparing for duplication: not a stub, not a dunder."""
+
+    name: str
+    line: int
+    column: int
+    end_line: int | None
+    end_column: int | None
+    lines: int
+    body: str
+    """SHA-1 of the dumped body statements; equal bodies hash equal."""
+
+
+@dataclass(frozen=True)
+class ClassFact:
+    name: str
+    line: int
+    column: int
+    end_line: int | None
+    end_column: int | None
+    bases: tuple[str, ...]
+    abstract: bool
+
+
+@dataclass(frozen=True)
+class TwinFact:
+    """``name`` has a plausible sync/async counterpart in the same scope."""
+
+    name: str
+    counterpart: str
+    scope: str
+    """Enclosing class name, or ``""`` at module level."""
+    line: int
+    lines: int
+    """Line count of ``name``'s definition (the threshold applies to it alone)."""
+    ratio: float
+
+
+@dataclass
+class FileFacts:
+    functions: list[FunctionFact] = field(default_factory=list)
+    classes: list[ClassFact] = field(default_factory=list)
+    twins: list[TwinFact] = field(default_factory=list)
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "functions": [
+                [f.name, f.line, f.column, f.end_line, f.end_column, f.lines, f.body]
+                for f in self.functions
+            ],
+            "classes": [
+                [c.name, c.line, c.column, c.end_line, c.end_column, list(c.bases), c.abstract]
+                for c in self.classes
+            ],
+            "twins": [
+                [t.name, t.counterpart, t.scope, t.line, t.lines, t.ratio] for t in self.twins
+            ],
+        }
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> FileFacts:
+        return cls(
+            functions=[FunctionFact(*f) for f in data["functions"]],
+            classes=[
+                ClassFact(c[0], c[1], c[2], c[3], c[4], tuple(c[5]), c[6]) for c in data["classes"]
+            ],
+            twins=[TwinFact(*t) for t in data["twins"]],
+        )
+
+
+def collect_facts(tree: ast.Module) -> FileFacts:
+    facts = FileFacts()
+    for node in _walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if _is_trivial_body(node) or _DUNDER_RE.match(node.name):
+                continue  # ``__repr__``/``__eq__`` across sibling classes are protocol hooks
+            body = hashlib.sha1(_dump_stmts(node.body).encode("utf-8")).hexdigest()
+            facts.functions.append(
+                FunctionFact(
+                    node.name, node.lineno, **_loc(node), lines=_line_count(node), body=body
+                )
+            )
+        elif isinstance(node, ast.ClassDef):
+            bases = _base_names_of(node)
+            facts.classes.append(
+                ClassFact(
+                    node.name,
+                    node.lineno,
+                    **_loc(node),
+                    bases=tuple(bases),
+                    abstract=bool(_ABSTRACT_BASES & set(bases)) or _has_abc_metaclass(node),
+                )
+            )
+    facts.twins = _twin_facts(tree)
+    return facts
+
+
 # ── Duplicate Function Bodies (whole-package) ─────────────────────────────────
 
 # A body needs at least this many occurrences to be a "duplicate" at all.
@@ -140,34 +257,32 @@ _MIN_DUPLICATE_OCCURRENCES = 2
 
 
 def check_duplicate_functions_pkg(
-    pkg_name: str, files: list[tuple[Path, ast.Module]], min_lines: int
+    pkg_name: str, files: list[tuple[Path, FileFacts]], min_lines: int
 ) -> list[Issue]:
     """Finds functions/methods with byte-for-byte identical bodies anywhere in
     the package."""
-    groups: dict[str, list[tuple[Path, ast.FunctionDef | ast.AsyncFunctionDef]]] = defaultdict(list)
-
-    for filepath, tree in files:
-        for node in _walk(tree):
-            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
-            if _line_count(node) < min_lines or _is_trivial_body(node):
-                continue
-            if _DUNDER_RE.match(node.name):
-                continue  # ``__repr__``/``__eq__`` across sibling classes are protocol hooks
-            groups[_dump_stmts(node.body)].append((filepath, node))
+    groups: dict[str, list[tuple[Path, FunctionFact]]] = defaultdict(list)
+    for filepath, facts in files:
+        for fn in facts.functions:
+            if fn.lines >= min_lines:
+                groups[fn.body].append((filepath, fn))
 
     issues: list[Issue] = []
     for occurrences in groups.values():
         if len(occurrences) < _MIN_DUPLICATE_OCCURRENCES:
             continue
-        occurrences.sort(key=lambda item: (str(item[0]), item[1].lineno))
-        locations = ", ".join(f"{_display_path(fp)}:{n.lineno} ({n.name})" for fp, n in occurrences)
-        first_fp, first_node = occurrences[0]
+        occurrences.sort(key=lambda item: (str(item[0]), item[1].line))
+        locations = ", ".join(
+            f"{_display_path(fp)}:{fn.line} ({fn.name})" for fp, fn in occurrences
+        )
+        first_fp, first = occurrences[0]
         issues.append(
             Issue(
                 file=first_fp,
-                line=first_node.lineno,
-                **_loc(first_node),
+                line=first.line,
+                column=first.column,
+                end_line=first.end_line,
+                end_column=first.end_column,
                 severity="warning",
                 rule="duplicate-function-body",
                 package=pkg_name,
@@ -198,48 +313,73 @@ def _twin_candidates(name: str) -> set[str]:
     return candidates
 
 
+def _twin_facts(tree: ast.Module) -> list[TwinFact]:
+    """Every (function, plausible counterpart) pair in one scope of the file,
+    with how similar their source text is. Scopes are visited in tree order,
+    pairs in definition order, counterparts in sorted order, so the list is
+    the same on every run."""
+    scopes: dict[str | None, dict[str, ast.FunctionDef | ast.AsyncFunctionDef]] = defaultdict(dict)
+    for node, class_name in _walk_with_class_context(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            scopes[class_name][node.name] = node
+    facts: list[TwinFact] = []
+    for class_name, by_name in scopes.items():
+        facts.extend(_twins_in_scope(class_name or "", by_name))
+    return facts
+
+
+def _twins_in_scope(
+    scope: str, by_name: dict[str, ast.FunctionDef | ast.AsyncFunctionDef]
+) -> list[TwinFact]:
+    text: dict[str, str] = {}
+
+    def unparsed(name: str) -> str:
+        if name not in text:
+            text[name] = ast.unparse(by_name[name])
+        return text[name]
+
+    facts: list[TwinFact] = []
+    for name, node in by_name.items():
+        # Sorted: a set's iteration order follows the hash seed, and a function
+        # with two counterparts (get / aget / get_async) must report them in
+        # the same order on every run.
+        for counterpart in sorted(_twin_candidates(name)):
+            if counterpart == name or counterpart not in by_name:
+                continue
+            other = by_name[counterpart]
+            ratio = difflib.SequenceMatcher(None, unparsed(name), unparsed(counterpart)).ratio()
+            line = min(node.lineno, other.lineno)
+            facts.append(TwinFact(name, counterpart, scope, line, _line_count(node), ratio))
+    return facts
+
+
 def check_sync_async_twins_pkg(
-    pkg_name: str, files: list[tuple[Path, ast.Module]], min_ratio: float
+    pkg_name: str, files: list[tuple[Path, FileFacts]], min_ratio: float
 ) -> list[Issue]:
     """Flags function pairs that look like a sync/async "twin" (by name) and
     whose bodies are highly similar text."""
-    scope_functions: dict[
-        tuple[Path, str | None], dict[str, tuple[ast.FunctionDef | ast.AsyncFunctionDef, bool]]
-    ] = defaultdict(dict)
-
-    for filepath, tree in files:
-        for node, class_name in _walk_with_class_context(tree):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                scope_functions[(filepath, class_name)][node.name] = (
-                    node,
-                    isinstance(node, ast.AsyncFunctionDef),
-                )
-
     issues: list[Issue] = []
-    reported: set[frozenset[tuple[str, str]]] = set()
-    for (filepath, class_name), by_name in scope_functions.items():
-        for name, candidate in _twin_pairs(by_name):
-            # The class is part of the key: Request.read/aread and Response.read/aread
-            # in one file are two twin pairs, not one.
-            pair_key = frozenset({(name, class_name or ""), (candidate, class_name or "")})
-            if pair_key in reported:
+    for filepath, facts in files:
+        # A pair is one finding however it is reached (read → aread and
+        # aread → read). The scope is part of the key: Request.read/aread and
+        # Response.read/aread in one file are two twin pairs, not one.
+        reported: set[tuple[str, frozenset[str]]] = set()
+        for twin in facts.twins:
+            if twin.lines < _cfg.MIN_TWIN_FUNCTION_LINES:
                 continue
-            node, other_node = by_name[name][0], by_name[candidate][0]
-            ratio = difflib.SequenceMatcher(
-                None, ast.unparse(node), ast.unparse(other_node)
-            ).ratio()
-            if ratio < min_ratio:
+            pair_key = (twin.scope, frozenset({twin.name, twin.counterpart}))
+            if pair_key in reported or twin.ratio < min_ratio:
                 continue
             reported.add(pair_key)
             issues.append(
                 Issue(
                     file=filepath,
-                    line=min(node.lineno, other_node.lineno),
+                    line=twin.line,
                     severity="warning",
                     rule="sync-async-duplication",
                     package=pkg_name,
                     message=(
-                        f"{name}() and {candidate}() are {ratio:.0%} similar — "
+                        f"{twin.name}() and {twin.counterpart}() are {twin.ratio:.0%} similar — "
                         "likely copy-pasted sync/async twins; extract a shared helper "
                         "for the non-blocking parts"
                     ),
@@ -248,55 +388,38 @@ def check_sync_async_twins_pkg(
     return issues
 
 
-def _twin_pairs(
-    by_name: dict[str, tuple[ast.FunctionDef | ast.AsyncFunctionDef, bool]],
-) -> Iterator[tuple[str, str]]:
-    """(name, counterpart) for every function in one scope whose plausible twin
-    also exists there, skipping bodies too short to compare meaningfully."""
-    for name, (node, _is_async) in by_name.items():
-        if _line_count(node) < _cfg.MIN_TWIN_FUNCTION_LINES:
-            continue
-        # Sorted: a set's iteration order follows the hash seed, and a function
-        # with two counterparts (get / aget / get_async) must report them in
-        # the same order on every run.
-        for candidate in sorted(_twin_candidates(name)):
-            if candidate != name and candidate in by_name:
-                yield name, candidate
-
-
 # ── Rule: Orphan Interfaces ───────────────────────────────────────────────────
 
 
-def check_orphan_interfaces_pkg(pkg_name: str, files: list[tuple[Path, ast.Module]]) -> list[Issue]:
+def check_orphan_interfaces_pkg(pkg_name: str, files: list[tuple[Path, FileFacts]]) -> list[Issue]:
     """Detect abstract classes with exactly one concrete implementation.
 
     This is a classic 'Speculative Generality' code smell. If an interface
     only exists to be implemented by a single class, it is likely adding
     mental overhead without providing any polymorphic value.
     """
-    interfaces: dict[str, tuple[Path, ast.ClassDef]] = {}
+    interfaces: dict[str, tuple[Path, ClassFact]] = {}
     implementations: dict[str, list[str]] = defaultdict(list)
-    for filepath, tree in files:
-        for node in _walk(tree):
-            if not isinstance(node, ast.ClassDef):
-                continue
-            base_names = _base_names_of(node)
-            for base_name in base_names:
+    for filepath, facts in files:
+        for cls in facts.classes:
+            for base_name in cls.bases:
                 if base_name not in _ABSTRACT_BASES:
-                    implementations[base_name].append(node.name)
-            if _ABSTRACT_BASES & set(base_names) or _has_abc_metaclass(node):
-                interfaces[node.name] = (filepath, node)
+                    implementations[base_name].append(cls.name)
+            if cls.abstract:
+                interfaces[cls.name] = (filepath, cls)
 
     issues: list[Issue] = []
-    for iface_name, (filepath, node) in interfaces.items():
+    for iface_name, (filepath, cls) in interfaces.items():
         impls = implementations.get(iface_name, [])
         if len(impls) != 1:
             continue
         issues.append(
             Issue(
                 file=filepath,
-                line=node.lineno,
-                **_loc(node),
+                line=cls.line,
+                column=cls.column,
+                end_line=cls.end_line,
+                end_column=cls.end_column,
                 severity="info",
                 rule="orphan-interface",
                 package=pkg_name,

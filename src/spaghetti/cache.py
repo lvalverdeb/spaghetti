@@ -7,9 +7,8 @@ version and the Python minor version — so changing a threshold or upgrading
 invalidates everything at once without a manifest. An entry holds exactly
 what ``detector._scan_one_file`` produces before ``_finalize``: raw findings
 (byte-offset columns, no fingerprints), the Maintainability Index, counts,
-and the two workspace transports (raw imports, token stream). On a hit the
-file is still parsed, because the package-level checks need the tree; the
-profile shows parsing is cheap and the thirty-odd per-file walks are not.
+the two workspace transports (raw imports, token stream) and the per-file facts
+the package-level checks combine. A hit therefore needs no parse at all.
 
 Entries are written atomically (temp file + ``os.replace``) so worker
 processes can share one directory, and any unreadable or mismatching entry is
@@ -27,13 +26,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from spaghetti.checks.package_level import FileFacts
 from spaghetti.checks.workspace_level import RawImport
 from spaghetti.clones import TokenStream
 from spaghetti.models import Issue
 
 __all__ = ["CACHE_SCHEMA_VERSION", "DEFAULT_CACHE_DIR", "FileCache", "FileEntry", "cache_key"]
 
-CACHE_SCHEMA_VERSION = 1
+CACHE_SCHEMA_VERSION = 2
 DEFAULT_CACHE_DIR = Path(".spaghetti/cache")
 
 
@@ -58,6 +58,7 @@ class FileEntry:
     mi: float | None = None
     raw_imports: list[RawImport] | None = None
     tokens: TokenStream | None = None
+    facts: FileFacts | None = None
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -82,6 +83,7 @@ class FileEntry:
                 else None
             ),
             "tokens": list(self.tokens) if self.tokens is not None else None,
+            "facts": self.facts.to_json() if self.facts is not None else None,
         }
 
     @classmethod
@@ -110,6 +112,7 @@ class FileEntry:
                 else None
             ),
             tokens=(tuple(data["tokens"]) if data["tokens"] is not None else None),  # type: ignore[arg-type]
+            facts=FileFacts.from_json(data["facts"]) if data["facts"] is not None else None,
         )
 
 

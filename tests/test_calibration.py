@@ -17,7 +17,7 @@ from spaghetti.checks.ast_per_file import (
     check_star_imports,
     check_unused_imports,
 )
-from spaghetti.checks.package_level import check_duplicate_functions_pkg
+from spaghetti.checks.package_level import check_duplicate_functions_pkg, collect_facts
 from spaghetti.checks.workspace_level import (
     build_import_graph,
     check_import_cycles_ws,
@@ -174,7 +174,8 @@ def test_duplicate_function_body_skips_dunder_protocol_hooks(
     name, files = _pkg(
         tmp_path, monkeypatch, {"a.py": "class A:\n" + body, "b.py": "class B:\n" + body}
     )
-    assert check_duplicate_functions_pkg(name, files, 5) == []
+    facts = [(p, collect_facts(tree)) for p, tree in files]
+    assert check_duplicate_functions_pkg(name, facts, 5) == []
 
 
 # ── enabled_by_default plumbing ──────────────────────────────────────────────

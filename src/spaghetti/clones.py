@@ -12,6 +12,7 @@ places, extended to its maximal length, is a clone group.
 from __future__ import annotations
 
 import ast
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -168,10 +169,14 @@ class _Index:
         self.logic = frozenset(code for name, code in vocab.items() if name in _LOGIC)
         self.width = width
         self.hashes = [_window_hashes(tokens, width) for tokens in self.encoded]
+        # Only a hash seen at least twice can start a group; counting first (in
+        # C) keeps the position index to the few windows that recur.
+        counts = Counter(h for hashes in self.hashes for h in hashes)
         self.by_hash: dict[int, list[Position]] = {}
         for file_index, hashes in enumerate(self.hashes):
             for offset, h in enumerate(hashes):
-                self.by_hash.setdefault(h, []).append((file_index, offset))
+                if counts[h] > 1:
+                    self.by_hash.setdefault(h, []).append((file_index, offset))
 
     def token_at(self, position: Position, shift: int) -> int | None:
         file_index, offset = position
@@ -190,8 +195,8 @@ class _Index:
     def group_at(self, first: Position) -> CloneGroup | None:
         """The maximal clone group whose first site starts at ``first``, or
         ``None`` if the window there is not the left-maximal start of one."""
-        candidates = self.by_hash[self.hashes[first[0]][first[1]]]
-        if len(candidates) < 2 or candidates[0] != first:
+        candidates = self.by_hash.get(self.hashes[first[0]][first[1]])
+        if candidates is None or candidates[0] != first:
             return None  # a group is emitted once, from its first site
         window = self.window(first)
         if _is_periodic(window):

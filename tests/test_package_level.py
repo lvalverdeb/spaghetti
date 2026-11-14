@@ -7,7 +7,7 @@ import ast
 from pathlib import Path
 
 from spaghetti import detector as ds
-from spaghetti.checks.package_level import check_sync_async_twins_pkg
+from spaghetti.checks.package_level import check_sync_async_twins_pkg, collect_facts
 from spaghetti.checks.workspace_level import (
     build_import_graph,
     check_import_cycles_ws,
@@ -103,7 +103,7 @@ def test_check_duplicate_functions_pkg_detects_duplicate(tmp_path: Path):
     for py_file in sorted(pkg_dir.rglob("*.py")):
         source = py_file.read_text()
         tree = ast.parse(source, filename=str(py_file))
-        files.append((py_file, tree))
+        files.append((py_file, collect_facts(tree)))
 
     issues = ds.check_duplicate_functions_pkg(pkg_name, files, min_lines=5)
     assert len(issues) == 1
@@ -121,7 +121,7 @@ def test_check_duplicate_functions_pkg_skips_trivial(tmp_path: Path):
     for py_file in sorted(pkg_dir.rglob("*.py")):
         source = py_file.read_text()
         tree = ast.parse(source, filename=str(py_file))
-        files.append((py_file, tree))
+        files.append((py_file, collect_facts(tree)))
 
     issues = ds.check_duplicate_functions_pkg(pkg_name, files, min_lines=5)
     assert issues == []
@@ -147,7 +147,7 @@ def test_check_sync_async_twins_detects_pair(tmp_path: Path):
     for py_file in sorted(pkg_dir.rglob("*.py")):
         source = py_file.read_text()
         tree = ast.parse(source, filename=str(py_file))
-        files.append((py_file, tree))
+        files.append((py_file, collect_facts(tree)))
 
     issues = ds.check_sync_async_twins_pkg(pkg_name, files, min_ratio=0.6)
     assert len(issues) == 1
@@ -169,7 +169,7 @@ def test_check_sync_async_twins_skips_different_bodies(tmp_path: Path):
     for py_file in sorted(pkg_dir.rglob("*.py")):
         source = py_file.read_text()
         tree = ast.parse(source, filename=str(py_file))
-        files.append((py_file, tree))
+        files.append((py_file, collect_facts(tree)))
 
     issues = ds.check_sync_async_twins_pkg(pkg_name, files, min_ratio=0.6)
     assert issues == []
@@ -185,7 +185,7 @@ def test_check_sync_async_twins_skips_short_functions(tmp_path: Path):
     for py_file in sorted(pkg_dir.rglob("*.py")):
         source = py_file.read_text()
         tree = ast.parse(source, filename=str(py_file))
-        files.append((py_file, tree))
+        files.append((py_file, collect_facts(tree)))
 
     issues = ds.check_sync_async_twins_pkg(pkg_name, files, min_ratio=0.6)
     assert issues == []
@@ -215,7 +215,7 @@ def test_sync_async_twins_reported_once_per_class(tmp_path: Path):
     path = tmp_path / "m.py"
     path.write_text(body)
     tree = ast.parse(body)
-    issues = check_sync_async_twins_pkg("pkg", [(path, tree)], 0.6)
+    issues = check_sync_async_twins_pkg("pkg", [(path, collect_facts(tree))], 0.6)
     assert [i.line for i in issues if i.rule == "sync-async-duplication"] == [2, 11]
 
 
@@ -227,8 +227,43 @@ def test_twin_pairs_are_reported_in_a_seed_independent_order(tmp_path: Path):
     )
     path = tmp_path / "m.py"
     path.write_text(body)
-    issues = check_sync_async_twins_pkg("pkg", [(path, ast.parse(body))], 0.6)
+    issues = check_sync_async_twins_pkg("pkg", [(path, collect_facts(ast.parse(body)))], 0.6)
     assert [i.message.split(" are ")[0] for i in issues] == [
         "get() and aget()",
         "get() and get_async()",
     ]
+
+
+def test_twin_pairs_in_different_files_are_each_reported(tmp_path: Path):
+    """The pair key is per file and scope: module-level get/aget twins in two
+    modules are two findings, not one."""
+    body = (
+        "def get(self):\n    a = self.s.read()\n    b = self.d(a)\n    c = self.e(b)\n    return c\n"
+        "async def aget(self):\n    a = self.s.read()\n    b = self.d(a)\n    c = self.e(b)\n    return c\n"
+    )
+    files = []
+    for name in ("a.py", "b.py"):
+        path = tmp_path / name
+        path.write_text(body)
+        files.append((path, collect_facts(ast.parse(body))))
+    issues = check_sync_async_twins_pkg("pkg", files, 0.6)
+    assert [(i.file.name, i.line) for i in issues] == [("a.py", 1), ("b.py", 1)]
+
+
+def test_facts_round_trip_through_json(tmp_path: Path):
+    from spaghetti.checks.package_level import FileFacts
+
+    body = (
+        "from abc import ABC\n"
+        "class Base(ABC):\n    pass\n"
+        "class Impl(Base):\n    pass\n"
+        "def f(x):\n    y = x + 1\n    z = y * 2\n    return z\n"
+        "async def af(x):\n    y = x + 1\n    z = y * 2\n    return z\n"
+    )
+    facts = collect_facts(ast.parse(body))
+    assert [c.name for c in facts.classes] == ["Base", "Impl"]
+    assert facts.classes[0].abstract and not facts.classes[1].abstract
+    assert [f.name for f in facts.functions] == ["f", "af"]
+    assert facts.functions[0].body == facts.functions[1].body
+    assert {(t.name, t.counterpart) for t in facts.twins} == {("f", "af"), ("af", "f")}
+    assert FileFacts.from_json(facts.to_json()) == facts

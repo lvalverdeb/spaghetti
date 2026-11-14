@@ -389,10 +389,11 @@ spaghetti --cache-dir .cache/sp   # elsewhere (implies --cache); or `cache = tru
 
 Entries are keyed by the file's content hash under a directory named by a hash of the applied
 settings, the tool version and the Python minor version, so a threshold change or an upgrade
-invalidates everything at once. A hit skips the thirty-odd per-file checks; the file is still
-parsed because the cross-file checks need the tree, and those always run. The cache is
-process-safe (atomic writes) and a damaged entry is a miss, never an error. A warm run of the
-benchmark corpus is about four times faster than a cold one (see [docs/benchmark.md](docs/benchmark.md)).
+invalidates everything at once. A hit skips the thirty-odd per-file checks and the parse: the
+entry carries the per-file facts (function bodies, class bases, twin similarities) the cross-file
+checks combine, so only those checks and clone detection run on a warm cache. The cache is
+process-safe (atomic writes) and a damaged entry is a miss, never an error. A warm run of pandas
+is about five times faster than a cold one (see [docs/benchmark.md](docs/benchmark.md)).
 
 ## Performance, robustness and conformance
 

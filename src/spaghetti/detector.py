@@ -28,6 +28,7 @@ import os
 import re
 import sys
 from collections import Counter
+from collections.abc import Callable
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -40,6 +41,7 @@ from spaghetti.checks.ast_per_file import low_maintainability_issue
 from spaghetti.checks.package_level import (
     check_duplicate_functions_pkg,
     check_sync_async_twins_pkg,
+    collect_facts,
 )
 from spaghetti.checks.workspace_level import (
     build_import_graph,
@@ -91,8 +93,12 @@ def _infra_issue(py_file: Path, pkg_name: str, rule: str, message: str) -> Issue
 
 
 def _scan_one_file(
-    py_file: Path, pkg_name: str, result: ScanResult, cache: FileCache | None = None
-) -> tuple[str, ast.Module | None] | None:
+    py_file: Path,
+    pkg_name: str,
+    pkg_path: Path,
+    result: ScanResult,
+    cache: FileCache | None = None,
+) -> None:
     """Run every per-file check on ``py_file``, appending findings to ``result``.
 
     Returns ``(source, tree)`` — ``tree`` is ``None`` when the file failed to
@@ -108,8 +114,18 @@ def _scan_one_file(
                 py_file, pkg_name, "unreadable-file", f"Failed to read file — {exc.strerror or exc}"
             )
         )
-        return None
+        _finalize_new(result, len(result.issues) - 1, pkg_path, None)
+        return
     result.total_lines += _file_line_count(source)
+    start = len(result.issues)
+    _scan_source(source, py_file, pkg_name, result, cache)
+    _finalize_new(result, start, pkg_path, source.splitlines())
+
+
+def _scan_source(
+    source: str, py_file: Path, pkg_name: str, result: ScanResult, cache: FileCache | None
+) -> None:
+    """Size limit, cache lookup, then the per-file checks (or the cached result)."""
 
     size = len(source.encode("utf-8", errors="replace"))
     if size > _cfg.MAX_FILE_BYTES:
@@ -122,13 +138,13 @@ def _scan_one_file(
                 "exclude it if generated, or raise the limit",
             )
         )
-        return source, None
+        return
 
     entry = cache.load(source, file=py_file, package=pkg_name) if cache is not None else None
     if entry is not None:
         result.cache_hits += 1
         _apply_cached(py_file, result, entry)
-        return source, _parse_quietly(source, py_file)
+        return
     if cache is not None:
         result.cache_misses += 1
 
@@ -142,6 +158,7 @@ def _scan_one_file(
         result.file_mi.pop(py_file, None)
         result.raw_imports.pop(py_file, None)
         result.token_streams.pop(py_file, None)
+        result.facts.pop(py_file, None)
         result.issues.append(
             _infra_issue(
                 py_file,
@@ -150,7 +167,7 @@ def _scan_one_file(
                 "File skipped — nesting deeper than the analysis limit; exclude it if generated",
             )
         )
-        return source, None
+        return
     if cache is not None:
         cache.store(
             source,
@@ -161,11 +178,11 @@ def _scan_one_file(
                 mi=result.file_mi.get(py_file),
                 raw_imports=result.raw_imports.get(py_file),
                 tokens=result.token_streams.get(py_file),
+                facts=result.facts.get(py_file),
             ),
             file=py_file,
             package=pkg_name,
         )
-    return source, tree
 
 
 def _check_one_file(
@@ -195,6 +212,7 @@ def _check_one_file(
     result.issues.extend(low_maintainability_issue(mi, py_file, pkg_name))
     result.raw_imports[py_file] = collect_raw_imports(tree)
     result.token_streams[py_file] = token_stream(tree)
+    result.facts[py_file] = collect_facts(tree)
     return tree
 
 
@@ -207,15 +225,8 @@ def _apply_cached(py_file: Path, result: ScanResult, entry: FileEntry) -> None:
         result.raw_imports[py_file] = entry.raw_imports
     if entry.tokens is not None:
         result.token_streams[py_file] = entry.tokens
-
-
-def _parse_quietly(source: str, py_file: Path) -> ast.Module | None:
-    """The tree for the package-level checks on a cache hit; the syntax-error
-    finding itself came from the cache."""
-    try:
-        return ast.parse(source, filename=str(py_file))
-    except (SyntaxError, RecursionError, MemoryError):
-        return None
+    if entry.facts is not None:
+        result.facts[py_file] = entry.facts
 
 
 def _char_column(line_text: str, byte_offset: int) -> int:
@@ -281,17 +292,54 @@ def _apply_rule_overrides(issues: list[Issue]) -> list[Issue]:
     return kept
 
 
-def _apply_suppressions(result: ScanResult, source_lines_by_file: dict[Path, list[str]]) -> None:
+class _SourceLines:
+    """Source lines of files read on demand, each at most once, for the
+    checks whose findings arrive after the per-file pass has let go of the
+    text. An unreadable file yields ``None`` and its findings are left as
+    they are, like a file that was never read."""
+
+    def __init__(self) -> None:
+        self._cache: dict[Path, list[str] | None] = {}
+
+    def __call__(self, path: Path) -> list[str] | None:
+        if path not in self._cache:
+            try:
+                self._cache[path] = path.read_text(encoding="utf-8", errors="replace").splitlines()
+            except OSError:
+                self._cache[path] = None
+        return self._cache[path]
+
+
+def _finalize_new(result: ScanResult, start: int, pkg_path: Path, lines: list[str] | None) -> None:
+    """Finalize the findings appended since ``start``, all from one file whose
+    source lines are ``lines``. Fingerprint occurrence counts are per file and
+    rule, so a file's findings can be finalized the moment they exist,
+    without waiting for the rest of the package."""
+    kept, ignored = _finalize_issues(result.issues[start:], pkg_path, lambda _path: lines)
+    result.issues[start:] = kept
+    result.suppressed += len(ignored)
+    result.ignored.extend(ignored)
+
+
+def _finalize_issues(
+    issues: list[Issue], pkg_path: Path, lines_of: Callable[[Path], list[str] | None]
+) -> tuple[list[Issue], list[Issue]]:
+    """Rule overrides, character columns, fingerprints, inline suppressions —
+    in that order. Returns the findings kept and the ones suppressed."""
+    issues = _apply_rule_overrides(issues)
+    for issue in issues:
+        _normalize_columns(issue, lines_of(issue.file))
+    _assign_fingerprints(issues, pkg_path)
     kept: list[Issue] = []
-    for issue in result.issues:
-        lines = source_lines_by_file.get(issue.file)
+    ignored: list[Issue] = []
+    for issue in issues:
+        lines = lines_of(issue.file)
         sup = _is_suppressed(issue, lines) if lines is not None else None
         if sup is not None:
-            result.suppressed += 1
-            result.ignored.append(dataclasses.replace(issue, reason=sup.reason))
+            ignored.append(dataclasses.replace(issue, reason=sup.reason))
         else:
             kept.append(issue)
-    result.issues = kept
+    return kept, ignored
 
 
 def scan_package(pkg_name: str, pkg_path: Path, *, config: ScanConfig) -> ScanResult:
@@ -299,95 +347,43 @@ def scan_package(pkg_name: str, pkg_path: Path, *, config: ScanConfig) -> ScanRe
     result = ScanResult()
     if not pkg_path.exists():
         return result
-
-    parsed_files: list[tuple[Path, ast.Module]] = []
-    source_lines_by_file: dict[Path, list[str]] = {}
-    cache = FileCache(config.cache_dir, config.cache_key) if config.cache_dir else None
-
-    for py_file in _iter_package_files(pkg_path, config):
-        scanned = _scan_one_file(py_file, pkg_name, result, cache)
-        if scanned is None:
-            continue
-        source, tree = scanned
-        source_lines_by_file[py_file] = source.splitlines()
-        if tree is not None:
-            parsed_files.append((py_file, tree))
-
-    _assemble_package(pkg_name, pkg_path, result, parsed_files, source_lines_by_file, config)
+    _scan_files_into(result, pkg_name, pkg_path, _iter_package_files(pkg_path, config), config)
+    _assemble_package(pkg_name, pkg_path, result, config)
     return result
 
 
-def _scan_files(pkg_name: str, files: list[Path], config: ScanConfig) -> ScanResult:
+def _scan_files(pkg_name: str, pkg_path: Path, files: list[Path], config: ScanConfig) -> ScanResult:
     """The per-file half of :func:`scan_package` for one chunk of files, run in
     a worker process. The parent reassembles chunks in file order."""
     result = ScanResult()
-    cache = FileCache(config.cache_dir, config.cache_key) if config.cache_dir else None
-    for py_file in files:
-        _scan_one_file(py_file, pkg_name, result, cache)
+    _scan_files_into(result, pkg_name, pkg_path, files, config)
     return result
 
 
-_INFRA_RULES = frozenset({"unreadable-file", "syntax-error", "scan-limit"})
-
-
-def _reload_for_package_checks(
-    result: ScanResult, files: list[Path]
-) -> tuple[list[tuple[Path, ast.Module]], dict[Path, list[str]]]:
-    """Re-read and re-parse ``files`` in the parent after a chunked scan, so
-    the package checks and ``_finalize`` see what :func:`scan_package` would
-    have kept: source lines for every readable file, a tree for every file
-    that produced no infrastructure finding."""
-    infra: dict[Path, set[str]] = {}
-    for issue in result.issues:
-        if issue.rule in _INFRA_RULES:
-            infra.setdefault(issue.file, set()).add(issue.rule)
-    parsed_files: list[tuple[Path, ast.Module]] = []
-    source_lines_by_file: dict[Path, list[str]] = {}
+def _scan_files_into(
+    result: ScanResult, pkg_name: str, pkg_path: Path, files: list[Path], config: ScanConfig
+) -> None:
+    cache = FileCache(config.cache_dir, config.cache_key) if config.cache_dir else None
     for py_file in files:
-        flags = infra.get(py_file, set())
-        if "unreadable-file" in flags:
-            continue
-        try:
-            source = py_file.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        source_lines_by_file[py_file] = source.splitlines()
-        if flags:
-            continue
-        tree = _parse_quietly(source, py_file)
-        if tree is not None:
-            parsed_files.append((py_file, tree))
-    return parsed_files, source_lines_by_file
+        _scan_one_file(py_file, pkg_name, pkg_path, result, cache)
 
 
 def _assemble_package(
-    pkg_name: str,
-    pkg_path: Path,
-    result: ScanResult,
-    parsed_files: list[tuple[Path, ast.Module]],
-    source_lines_by_file: dict[Path, list[str]],
-    config: ScanConfig,
+    pkg_name: str, pkg_path: Path, result: ScanResult, config: ScanConfig
 ) -> None:
-    """The package-level half: cross-file checks over the trees, then finalize."""
+    """The package-level half: the cross-file checks over the per-file facts,
+    finalized with the source of just the files they name. Consumes the facts."""
+    facts = list(result.facts.items())
+    result.facts = {}
+    found: list[Issue] = []
     for pkg_check_fn in PACKAGE_CHECKS:
-        result.issues.extend(pkg_check_fn(pkg_name, parsed_files))
-    result.issues.extend(
-        check_duplicate_functions_pkg(pkg_name, parsed_files, config.min_duplicate_lines)
-    )
-    result.issues.extend(check_sync_async_twins_pkg(pkg_name, parsed_files, config.twin_similarity))
-    _finalize(result, pkg_path, source_lines_by_file)
-
-
-def _finalize(
-    result: ScanResult, pkg_path: Path, source_lines_by_file: dict[Path, list[str]]
-) -> None:
-    """Rule overrides, character columns, fingerprints, inline suppressions —
-    in that order, for every issue in ``result``."""
-    result.issues = _apply_rule_overrides(result.issues)
-    for issue in result.issues:
-        _normalize_columns(issue, source_lines_by_file.get(issue.file))
-    _assign_fingerprints(result.issues, pkg_path)
-    _apply_suppressions(result, source_lines_by_file)
+        found.extend(pkg_check_fn(pkg_name, facts))
+    found.extend(check_duplicate_functions_pkg(pkg_name, facts, config.min_duplicate_lines))
+    found.extend(check_sync_async_twins_pkg(pkg_name, facts, config.twin_similarity))
+    kept, ignored = _finalize_issues(found, pkg_path, _SourceLines())
+    result.issues.extend(kept)
+    result.suppressed += len(ignored)
+    result.ignored.extend(ignored)
 
 
 def scan_workspace(per_package: dict[str, ScanResult], *, config: ScanConfig) -> None:
@@ -405,27 +401,17 @@ def scan_workspace(per_package: dict[str, ScanResult], *, config: ScanConfig) ->
     ]
     if _cfg.CONTRACTS:
         found.extend(check_contracts_ws(*dependency_edges(imports), _cfg.CONTRACTS))
-    lines_cache: dict[Path, list[str]] = {}
-
-    def lines_of(path: Path) -> list[str]:
-        if path not in lines_cache:
-            try:
-                lines_cache[path] = path.read_text(encoding="utf-8", errors="replace").splitlines()
-            except OSError:
-                lines_cache[path] = []
-        return lines_cache[path]
-
+    lines_of = _SourceLines()
     for pkg_name, result in per_package.items():
         own = [i for i in found if i.package == pkg_name]
         result.raw_imports = {}
         result.token_streams = {}
         if not own:
             continue
-        staging = ScanResult(issues=own)
-        _finalize(staging, PACKAGES[pkg_name], {i.file: lines_of(i.file) for i in own})
-        result.issues.extend(staging.issues)
-        result.suppressed += staging.suppressed
-        result.ignored.extend(staging.ignored)
+        kept, ignored = _finalize_issues(own, PACKAGES[pkg_name], lines_of)
+        result.issues.extend(kept)
+        result.suppressed += len(ignored)
+        result.ignored.extend(ignored)
 
 
 def _init_worker(worker_packages: dict[str, Path], overrides: dict[str, Any] | None = None) -> None:
@@ -469,7 +455,7 @@ async def _review_one(
         return pkg_name, await loop.run_in_executor(executor, func)
     parts = await asyncio.gather(
         *(
-            loop.run_in_executor(executor, partial(_scan_files, pkg_name, chunk, config))
+            loop.run_in_executor(executor, partial(_scan_files, pkg_name, pkg_path, chunk, config))
             for chunk in _chunks(files, workers)
         )
     )
@@ -478,8 +464,8 @@ async def _review_one(
         result.extend(part)
         result.raw_imports.update(part.raw_imports)
         result.token_streams.update(part.token_streams)
-    parsed_files, source_lines_by_file = _reload_for_package_checks(result, files)
-    _assemble_package(pkg_name, pkg_path, result, parsed_files, source_lines_by_file, config)
+        result.facts.update(part.facts)
+    _assemble_package(pkg_name, pkg_path, result, config)
     return pkg_name, result
 
 

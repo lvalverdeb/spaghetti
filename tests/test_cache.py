@@ -9,7 +9,7 @@ import pytest
 
 import spaghetti.config as _cfg
 from spaghetti import detector as ds
-from spaghetti.cache import FileCache, cache_key
+from spaghetti.cache import CACHE_SCHEMA_VERSION, FileCache, cache_key
 from spaghetti.models import ScanConfig
 
 SOURCE = (
@@ -62,7 +62,7 @@ def test_cache_hit_reproduces_the_uncached_result_exactly(pkg: Path, tmp_path: P
     entries = list((tmp_path / "cache" / "k").glob("*.json"))
     assert len(entries) == 2
     data = json.loads(entries[0].read_text())
-    assert data["schema_version"] == 1 and "issues" in data
+    assert data["schema_version"] == CACHE_SCHEMA_VERSION and "issues" in data
 
 
 def test_edited_file_misses_and_changed_key_invalidates(pkg: Path, tmp_path: Path):

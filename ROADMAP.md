@@ -253,8 +253,13 @@ the first CI run failed the budget; packages of 64 files or more are now scanned
 across the process pool and reassembled in file order (`detector._scan_files`), which brings the
 combined run to 38 s with 4 workers on the laptop with byte-identical output. CI enforces the
 budget with `--runs 2 --budget 120`. Memoizing the whole-tree walk shared by the per-file checks had
-already cut Python time by a third. Incremental cache (`spaghetti.cache`, `--cache`/`--cache-dir`, `cache`/`cache-dir`
-settings) keyed by content hash under a settings+version key. Robustness: `tests/test_fuzz.py`
+already cut Python time by a third. The sequential tail was then cut (2.5.0): the package-level
+checks consume per-file *facts* the worker records while it holds the tree (`package_level.collect_facts`),
+each file's findings are finalized in the worker, and the parent never re-parses; clone detection
+indexes only recurring window hashes. pandas with 4 workers: 32.7 s → 19.7 s cold, 17.9 s → 3.9 s
+warm. Incremental cache (`spaghetti.cache`, `--cache`/`--cache-dir`, `cache`/`cache-dir`
+settings) keyed by content hash under a settings+version key; entries hold the facts, so a hit
+needs no parse. Robustness: `tests/test_fuzz.py`
 (hypothesmith programs + arbitrary text, never raises; CI fuzz job ≈ 10 min), `max-file-bytes`
 (1 MiB) and a recursion guard emit `scan-limit` instead of stalling or crashing; the sweep
 found and fixed a crash on a lone-surrogate string annotation (pandas). Conformance:

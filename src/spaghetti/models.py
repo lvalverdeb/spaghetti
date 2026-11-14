@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
+    from spaghetti.checks.package_level import FileFacts
     from spaghetti.checks.workspace_level import RawImport
     from spaghetti.clones import TokenStream
 
@@ -94,6 +95,8 @@ class ScanResult:
     """Transport from worker to parent for the workspace-level import graph; cleared after use."""
     token_streams: dict[Path, TokenStream] = field(default_factory=dict)
     """Transport from worker to parent for clone detection; cleared after use."""
+    facts: dict[Path, FileFacts] = field(default_factory=dict)
+    """Transport from worker to parent for the package-level checks; cleared after use."""
 
     def extend(self, other: ScanResult) -> None:
         """Fold ``other`` into this result (the all-packages total)."""
