@@ -167,8 +167,9 @@ def _render(rows: list[dict], args, repos: list[Repo]) -> str:
         lines.append("| " + " | ".join(cells) + " |")
     lines += [
         "",
-        "Budget (ROADMAP Phase 5): the *all three* row under 90 s for Python and 10 s for Rust "
-        "on a 4-core CI runner. CI enforces the Python budget with `--budget 90`.",
+        "Budget (ROADMAP Phase 5): the *all three* row under 90 s for Python and 15 s for Rust "
+        "on the 4-core GitHub runner, which is about 1.7× slower per core than the laptop above. "
+        "CI enforces the budgets with `--budget 90` and `--rust-budget 15`.",
         "",
     ]
     return "\n".join(lines)

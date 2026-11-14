@@ -29,6 +29,7 @@ from pathlib import Path
 
 import pytest
 
+from spaghetti import config as _cfg
 from spaghetti import detector as ds
 from spaghetti.models import ScanConfig, ScanResult
 
@@ -283,3 +284,50 @@ def test_fingerprints_are_stable_across_line_shifts_and_distinct_per_occurrence(
     assert first == second
     assert len(set(first.values())) == len(first)
     assert all(len(fp) == 16 for fp in first.values())
+
+
+def test_chunked_parallel_scan_matches_the_sequential_scan(tmp_path: Path, monkeypatch):
+    """Large packages are scanned as file chunks across the pool and reassembled
+    in the parent; the result must be byte-for-byte what scan_package gives."""
+    root = tmp_path / "big"
+    (root / "sub").mkdir(parents=True)
+    body = (
+        "import os\n"
+        "class Base:\n"
+        "    def run(self, x):\n"
+        "        if x:\n"
+        "            return os.getcwd()\n"
+        "        if x is None:\n"
+        "            raise ValueError(x)\n"
+        "        for part in os.listdir('.'):\n"
+        "            if part.startswith('.'):\n"
+        "                continue\n"
+        "        return None\n"
+        "def helper(a, b):\n"
+        "    return a if a else b\n"
+    )
+    for i in range(10):
+        (root / f"m{i}.py").write_text(body.replace("Base", f"Base{i}"))
+        (root / "sub" / f"n{i}.py").write_text(body.replace("helper", f"helper{i}"))
+    (root / "broken.py").write_text("def (:\n")
+    (root / "huge.py").write_text("x = 1\n" * 400)
+    monkeypatch.setattr(ds, "PACKAGES", {"big": root})
+    monkeypatch.setattr(ds, "PARALLEL_MIN_FILES", 4)
+    monkeypatch.setattr(_cfg, "MAX_FILE_BYTES", 2000)
+    config = ScanConfig(exclude=[], min_duplicate_lines=5, twin_similarity=0.6)
+    sequential = ds.scan_package("big", root, config=config)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+        parallel = asyncio.run(
+            ds.review_packages_concurrently(["big"], config=config, executor=pool)
+        )["big"]
+    assert parallel.issues == sequential.issues
+    assert parallel.files_scanned == sequential.files_scanned == 22
+    assert parallel.total_lines == sequential.total_lines
+    assert parallel.functions_scanned == sequential.functions_scanned
+    assert parallel.file_mi == sequential.file_mi
+    assert parallel.suppressed == sequential.suppressed
+    assert {i.rule for i in parallel.issues} >= {
+        "syntax-error",
+        "scan-limit",
+        "duplicate-function-body",
+    }

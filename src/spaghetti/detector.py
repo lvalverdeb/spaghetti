@@ -24,6 +24,7 @@ import asyncio
 import concurrent.futures
 import dataclasses
 import hashlib
+import os
 import re
 import sys
 from collections import Counter
@@ -294,6 +295,7 @@ def _apply_suppressions(result: ScanResult, source_lines_by_file: dict[Path, lis
 
 
 def scan_package(pkg_name: str, pkg_path: Path, *, config: ScanConfig) -> ScanResult:
+    """Scan one package in this process: every file, then the package checks."""
     result = ScanResult()
     if not pkg_path.exists():
         return result
@@ -311,15 +313,69 @@ def scan_package(pkg_name: str, pkg_path: Path, *, config: ScanConfig) -> ScanRe
         if tree is not None:
             parsed_files.append((py_file, tree))
 
+    _assemble_package(pkg_name, pkg_path, result, parsed_files, source_lines_by_file, config)
+    return result
+
+
+def _scan_files(pkg_name: str, files: list[Path], config: ScanConfig) -> ScanResult:
+    """The per-file half of :func:`scan_package` for one chunk of files, run in
+    a worker process. The parent reassembles chunks in file order."""
+    result = ScanResult()
+    cache = FileCache(config.cache_dir, config.cache_key) if config.cache_dir else None
+    for py_file in files:
+        _scan_one_file(py_file, pkg_name, result, cache)
+    return result
+
+
+_INFRA_RULES = frozenset({"unreadable-file", "syntax-error", "scan-limit"})
+
+
+def _reload_for_package_checks(
+    result: ScanResult, files: list[Path]
+) -> tuple[list[tuple[Path, ast.Module]], dict[Path, list[str]]]:
+    """Re-read and re-parse ``files`` in the parent after a chunked scan, so
+    the package checks and ``_finalize`` see what :func:`scan_package` would
+    have kept: source lines for every readable file, a tree for every file
+    that produced no infrastructure finding."""
+    infra: dict[Path, set[str]] = {}
+    for issue in result.issues:
+        if issue.rule in _INFRA_RULES:
+            infra.setdefault(issue.file, set()).add(issue.rule)
+    parsed_files: list[tuple[Path, ast.Module]] = []
+    source_lines_by_file: dict[Path, list[str]] = {}
+    for py_file in files:
+        flags = infra.get(py_file, set())
+        if "unreadable-file" in flags:
+            continue
+        try:
+            source = py_file.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        source_lines_by_file[py_file] = source.splitlines()
+        if flags:
+            continue
+        tree = _parse_quietly(source, py_file)
+        if tree is not None:
+            parsed_files.append((py_file, tree))
+    return parsed_files, source_lines_by_file
+
+
+def _assemble_package(
+    pkg_name: str,
+    pkg_path: Path,
+    result: ScanResult,
+    parsed_files: list[tuple[Path, ast.Module]],
+    source_lines_by_file: dict[Path, list[str]],
+    config: ScanConfig,
+) -> None:
+    """The package-level half: cross-file checks over the trees, then finalize."""
     for pkg_check_fn in PACKAGE_CHECKS:
         result.issues.extend(pkg_check_fn(pkg_name, parsed_files))
     result.issues.extend(
         check_duplicate_functions_pkg(pkg_name, parsed_files, config.min_duplicate_lines)
     )
     result.issues.extend(check_sync_async_twins_pkg(pkg_name, parsed_files, config.twin_similarity))
-
     _finalize(result, pkg_path, source_lines_by_file)
-    return result
 
 
 def _finalize(
@@ -383,17 +439,48 @@ def _init_worker(worker_packages: dict[str, Path], overrides: dict[str, Any] | N
         apply_overrides(overrides)
 
 
+# Packages with at least this many files are scanned in parallel chunks; smaller
+# ones go to one worker whole, which is cheaper than chunk bookkeeping.
+PARALLEL_MIN_FILES = 64
+
+
+def _chunks(files: list[Path], workers: int) -> list[list[Path]]:
+    """``files`` split into about ``4 × workers`` contiguous runs so the pool
+    stays busy to the end without a long tail from one big chunk."""
+    count = min(len(files), max(1, workers) * 4)
+    size = -(-len(files) // count)
+    return [files[i : i + size] for i in range(0, len(files), size)]
+
+
 async def _review_one(
     pkg_name: str,
     *,
     config: ScanConfig,
     executor: concurrent.futures.Executor,
+    workers: int,
 ) -> tuple[str, ScanResult]:
     loop = asyncio.get_running_loop()
-    # Look ``scan_package`` up on the module at call time so tests can
-    # monkeypatch it.
-    func = partial(scan_package, pkg_name, PACKAGES[pkg_name], config=config)
-    return pkg_name, await loop.run_in_executor(executor, func)
+    pkg_path = PACKAGES[pkg_name]
+    files = _iter_package_files(pkg_path, config) if pkg_path.exists() else []
+    if len(files) < PARALLEL_MIN_FILES:
+        # Look ``scan_package`` up on the module at call time so tests can
+        # monkeypatch it.
+        func = partial(scan_package, pkg_name, pkg_path, config=config)
+        return pkg_name, await loop.run_in_executor(executor, func)
+    parts = await asyncio.gather(
+        *(
+            loop.run_in_executor(executor, partial(_scan_files, pkg_name, chunk, config))
+            for chunk in _chunks(files, workers)
+        )
+    )
+    result = ScanResult()
+    for part in parts:  # chunk order is file order, so issue order is unchanged
+        result.extend(part)
+        result.raw_imports.update(part.raw_imports)
+        result.token_streams.update(part.token_streams)
+    parsed_files, source_lines_by_file = _reload_for_package_checks(result, files)
+    _assemble_package(pkg_name, pkg_path, result, parsed_files, source_lines_by_file, config)
+    return pkg_name, result
 
 
 async def review_packages_concurrently(
@@ -415,11 +502,14 @@ async def review_packages_concurrently(
     rather than being silently dropped from the report.
     """
     own_executor: concurrent.futures.Executor | None = None
+    workers = os.cpu_count() or 1
     if executor is None:
         own_executor = concurrent.futures.ProcessPoolExecutor(
             initializer=_init_worker, initargs=(PACKAGES, overrides)
         )
         executor = own_executor
+    elif (max_workers := getattr(executor, "_max_workers", None)) is not None:
+        workers = max_workers
     try:
         pairs = await asyncio.gather(
             *(
@@ -427,6 +517,7 @@ async def review_packages_concurrently(
                     pkg_name,
                     config=dataclasses.replace(config, recursive=pkg_name not in non_recursive),
                     executor=executor,
+                    workers=workers,
                 )
                 for pkg_name in pkg_names
             )
