@@ -203,3 +203,56 @@ commits, scanned with spaghetti 2.0.0.
   at `warning` via `[tool.spaghetti.rules]` for teams that gate on it. Known limitation:
   table-like data (long lists of similar calls) with varying arity can still form a
   region; strictly periodic windows are already skipped.
+
+## Addendum: Phase 5 audit of the newer rules (2026-11-13)
+
+The three Phase 2 rules had only spot checks above. This pass samples them the Phase 1 way
+on a wider corpus: the five audit repos plus `django` and `airflow` (package directories
+only), all at the commits pinned in `scripts/corpus.lock`, scanned with spaghetti 2.3.0 and
+the Rust port at parity, default thresholds. 30 findings per rule, seeded sample
+(`20261113`), classified from the code around each finding with the same TP / FP / debatable
+scale. `contract-violation` has no corpus findings because no corpus repo declares contracts;
+its behaviour is fixed by the fixtures in `tests/test_contracts.py` and it carries no
+precision figure.
+
+| Rule | Findings (before) | Sampled | TP | FP | Debatable | Strict precision | Lenient precision | Findings (after) |
+|---|---|---|---|---|---|---|---|---|
+| `high-cognitive-complexity` | 869 | 30 | 24 | 0 | 6 | 80% | 100% | 869 |
+| `low-maintainability` | 51 | 30 | 24 | 0 | 6 | 80% | 100% | 51 |
+| `duplicate-code` | 3390 | 30 | 9 | 13 | 8 | 30% | 57% | 1891 |
+
+- **`high-cognitive-complexity`**: scores in the sample run from 16 to 148. No misfires;
+  every function nests loops inside conditionals inside try blocks the way the metric
+  describes. The six debatable hits score 16 or 17, two over the Sonar default of 15, and
+  are 30-60 line functions a reviewer would call dense rather than broken: a threshold
+  question, so the threshold stays configurable and the rule is unchanged.
+- **`low-maintainability`**: every hit is a core module, 700 to 6500 lines, and 22 of 30
+  sit at MI 0.0 because the formula clips below zero, so the message no longer separates a
+  1300-line module from a 6500-line one. The six debatable hits are the modules under 1300
+  lines (`django/db/models/constraints.py` at 699 lines is the smallest), where "split it
+  along its responsibilities" is advice the maintainers have presumably already weighed.
+  Unchanged; a graded message is possible later but changes no verdicts.
+- **`duplicate-code`**: the spot check above said "no misfires, mostly deliberate copies";
+  a proper sample disagrees. 13 of 30 were not duplicated *logic* at all: Alembic migration
+  headers and `op.drop_table` runs, Airflow's `ConfigChange(...)` tables and `Arg(...)`
+  declarations, import blocks shared by sibling route modules, FastAPI's parameter
+  forwarding (`params.Cookie(default=default, alias=alias, ...)`), and windows that ran
+  from the tail of one method into the head of the next because the two neighbours were
+  shaped alike. Two narrowings follow, both mirrored in the Rust port:
+  - A clone must contain at least one *logic* token (branch, loop, `try`, `with`,
+    `return`, `raise`, comparison, boolean operator, comprehension, lambda or augmented
+    assignment). A window of only calls, assignments, literals and imports is a declaration
+    table or argument forwarding.
+  - Definitions carry a name-bearing boundary token, so a window can run from one
+    function or class into the next only when both sides enter a definition of the same
+    name. Visitor methods or route handlers that merely sit next to each other no longer
+    fuse into one clone.
+
+  On the seven repos this drops the rule from 3390 to 1891 findings. Of the 30 judged
+  samples the filter removed 9 of the 13 false positives, 3 of the 8 debatable ones and 1
+  of the 9 true positives (an Airflow region that was mostly `mapped_column` declarations
+  with a `return` on its first line). The 17 survivors score 8 TP / 5 debatable / 4 FP
+  (47% strict, 76% lenient), a biased re-count rather than a fresh sample; the remaining
+  false positives are migration files whose `upgrade()` bodies really are identical
+  statements (`with op.batch_alter_table(...)` blocks), which the metric cannot tell from
+  a copy a maintainer should factor out. The rule stays at `info`.

@@ -22,7 +22,7 @@ Collapse a branch ladder that returns different values into a dictionary lookup 
 
 ## Precision
 
-Strict **10%**, lenient **55%** over 20 sampled findings on httpx, rich, fastapi, pydantic and black ([method](../precision.md#method)).
+Strict **10%**, lenient **55%** over 20 sampled findings on the audit corpus ([method](../precision.md#method)).
 
 ## Elsewhere
 

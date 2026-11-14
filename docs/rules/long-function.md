@@ -23,7 +23,7 @@ Extract Method: name each block that has its own comment or blank-line separatio
 
 ## Precision
 
-Strict **36%**, lenient **67%** over 39 sampled findings on httpx, rich, fastapi, pydantic and black ([method](../precision.md#method)).
+Strict **36%**, lenient **67%** over 39 sampled findings on the audit corpus ([method](../precision.md#method)).
 
 ## Elsewhere
 

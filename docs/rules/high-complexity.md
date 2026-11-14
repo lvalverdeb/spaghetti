@@ -22,7 +22,7 @@ Replace branch ladders with a dispatch table or polymorphism, hoist guard clause
 
 ## Precision
 
-Strict **40%**, lenient **95%** over 40 sampled findings on httpx, rich, fastapi, pydantic and black ([method](../precision.md#method)).
+Strict **40%**, lenient **95%** over 40 sampled findings on the audit corpus ([method](../precision.md#method)).
 
 ## Elsewhere
 

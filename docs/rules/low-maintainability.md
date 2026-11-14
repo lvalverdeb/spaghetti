@@ -22,7 +22,7 @@ Split the module by responsibility, then apply the complexity and length fixes t
 
 ## Precision
 
-Not in the Phase 1 sample (no findings on the corpus, or added later); see [docs/precision.md](../precision.md) for the Phase 2 addendum.
+Strict **80%**, lenient **100%** over 30 sampled findings on the audit corpus ([method](../precision.md#method)).
 
 ## Elsewhere
 

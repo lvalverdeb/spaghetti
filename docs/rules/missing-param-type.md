@@ -16,7 +16,7 @@ Annotate the parameter; prefer `Protocol`s or ABCs over concrete classes when se
 
 ## Precision
 
-Strict **0%**, lenient **86%** over 7 sampled findings on httpx, rich, fastapi, pydantic and black ([method](../precision.md#method)).
+Strict **0%**, lenient **86%** over 7 sampled findings on the audit corpus ([method](../precision.md#method)).
 
 ## Elsewhere
 

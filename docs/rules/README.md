@@ -6,8 +6,8 @@
 |---|---|---|---|---|---|
 | [`long-function`](long-function.md) | warning | ast | on | 36% | 67% |
 | [`high-complexity`](high-complexity.md) | warning | ast | on | 40% | 95% |
-| [`high-cognitive-complexity`](high-cognitive-complexity.md) | warning | ast | on | — | — |
-| [`low-maintainability`](low-maintainability.md) | warning | text | on | — | — |
+| [`high-cognitive-complexity`](high-cognitive-complexity.md) | warning | ast | on | 80% | 100% |
+| [`low-maintainability`](low-maintainability.md) | warning | text | on | 80% | 100% |
 | [`missing-return-type`](missing-return-type.md) | warning | ast | on | 43% | 71% |
 | [`missing-param-type`](missing-param-type.md) | info | ast | on | 0% | 86% |
 | [`too-many-params`](too-many-params.md) | warning | ast | on | 2% | 28% |
@@ -47,7 +47,7 @@
 | [`import-cycle`](import-cycle.md) | error | workspace | on | 0% | 0% |
 | [`contract-violation`](contract-violation.md) | error | workspace | on | — | — |
 | [`high-coupling`](high-coupling.md) | warning | workspace | on | 0% | 50% |
-| [`duplicate-code`](duplicate-code.md) | info | workspace | on | — | — |
+| [`duplicate-code`](duplicate-code.md) | info | workspace | on | 30% | 57% |
 | [`orphan-interface`](orphan-interface.md) | info | package | on | 0% | 50% |
 | [`duplicate-function-body`](duplicate-function-body.md) | warning | package | on | 4% | 43% |
 | [`sync-async-duplication`](sync-async-duplication.md) | warning | package | on | 0% | 0% |

@@ -23,7 +23,7 @@ Split the module so that the widely imported part (stable types, constants) is s
 
 ## Precision
 
-Strict **0%**, lenient **50%** over 4 sampled findings on httpx, rich, fastapi, pydantic and black ([method](../precision.md#method)).
+Strict **0%**, lenient **50%** over 4 sampled findings on the audit corpus ([method](../precision.md#method)).
 
 ## Elsewhere
 

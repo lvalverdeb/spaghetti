@@ -31,7 +31,7 @@ _ROW = re.compile(
 
 
 def precision_table() -> dict[str, dict[str, str]]:
-    """Rule → {sampled, strict, lenient} from the Phase 1 per-rule table."""
+    """Rule → {sampled, strict, lenient} from the first per-rule table row naming it."""
     out: dict[str, dict[str, str]] = {}
     for line in PRECISION.read_text(encoding="utf-8").splitlines():
         m = _ROW.match(line)
@@ -48,13 +48,12 @@ def _precision_line(rule: str, table: dict[str, dict[str, str]]) -> str:
     row = table.get(rule)
     if row is None:
         return (
-            "Not in the Phase 1 sample (no findings on the corpus, or added later); see "
-            "[docs/precision.md](../precision.md) for the Phase 2 addendum."
+            "Not sampled (no findings on the audit corpus); see "
+            "[docs/precision.md](../precision.md)."
         )
     return (
         f"Strict **{row['strict']}**, lenient **{row['lenient']}** over {row['sampled']} "
-        f"sampled findings on httpx, rich, fastapi, pydantic and black "
-        f"([method](../precision.md#method))."
+        f"sampled findings on the audit corpus ([method](../precision.md#method))."
     )
 
 

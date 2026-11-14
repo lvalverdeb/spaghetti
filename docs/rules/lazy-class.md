@@ -22,7 +22,7 @@ Make it a `dataclass`/`NamedTuple` if it holds data, a plain function if it hold
 
 ## Precision
 
-Strict **0%**, lenient **0%** over 27 sampled findings on httpx, rich, fastapi, pydantic and black ([method](../precision.md#method)).
+Strict **0%**, lenient **0%** over 27 sampled findings on the audit corpus ([method](../precision.md#method)).
 
 ## Elsewhere
 

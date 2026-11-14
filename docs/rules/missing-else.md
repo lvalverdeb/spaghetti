@@ -16,7 +16,7 @@ Add the `else` (or a comment stating the fall-through is intended). Off by defau
 
 ## Precision
 
-Strict **0%**, lenient **0%** over 40 sampled findings on httpx, rich, fastapi, pydantic and black ([method](../precision.md#method)).
+Strict **0%**, lenient **0%** over 40 sampled findings on the audit corpus ([method](../precision.md#method)).
 
 ## Elsewhere
 

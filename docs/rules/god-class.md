@@ -24,7 +24,7 @@ Extract Class along the attribute clusters its methods actually use (the LCOM gr
 
 ## Precision
 
-Strict **28%**, lenient **81%** over 32 sampled findings on httpx, rich, fastapi, pydantic and black ([method](../precision.md#method)).
+Strict **28%**, lenient **81%** over 32 sampled findings on the audit corpus ([method](../precision.md#method)).
 
 ## Elsewhere
 

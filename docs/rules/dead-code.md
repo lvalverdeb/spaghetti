@@ -16,7 +16,7 @@ Delete them, or move them before the exit if they were meant to run.
 
 ## Precision
 
-Strict **0%**, lenient **0%** over 3 sampled findings on httpx, rich, fastapi, pydantic and black ([method](../precision.md#method)).
+Strict **0%**, lenient **0%** over 3 sampled findings on the audit corpus ([method](../precision.md#method)).
 
 ## Elsewhere
 

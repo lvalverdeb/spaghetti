@@ -16,7 +16,7 @@ Catch the narrowest type, handle it (log with context, substitute a value *and* 
 
 ## Precision
 
-Strict **0%**, lenient **7%** over 30 sampled findings on httpx, rich, fastapi, pydantic and black ([method](../precision.md#method)).
+Strict **0%**, lenient **7%** over 30 sampled findings on the audit corpus ([method](../precision.md#method)).
 
 ## Elsewhere
 

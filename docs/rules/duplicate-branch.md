@@ -16,7 +16,7 @@ Delete the condition if both branches are truly the same; otherwise fix the bran
 
 ## Precision
 
-Strict **0%**, lenient **100%** over 1 sampled findings on httpx, rich, fastapi, pydantic and black ([method](../precision.md#method)).
+Strict **0%**, lenient **100%** over 1 sampled findings on the audit corpus ([method](../precision.md#method)).
 
 ## Elsewhere
 

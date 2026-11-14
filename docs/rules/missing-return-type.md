@@ -16,7 +16,7 @@ Annotate the return type; use `-> None` for procedures. Private (underscore) fun
 
 ## Precision
 
-Strict **43%**, lenient **71%** over 7 sampled findings on httpx, rich, fastapi, pydantic and black ([method](../precision.md#method)).
+Strict **43%**, lenient **71%** over 7 sampled findings on the audit corpus ([method](../precision.md#method)).
 
 ## Elsewhere
 

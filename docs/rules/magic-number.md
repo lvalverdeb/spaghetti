@@ -16,7 +16,7 @@ Name it as a module-level constant (or an `Enum` member) where the meaning lives
 
 ## Precision
 
-Strict **2%**, lenient **18%** over 40 sampled findings on httpx, rich, fastapi, pydantic and black ([method](../precision.md#method)).
+Strict **2%**, lenient **18%** over 40 sampled findings on the audit corpus ([method](../precision.md#method)).
 
 ## Elsewhere
 

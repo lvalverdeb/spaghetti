@@ -22,7 +22,7 @@ Flatten: compose the behaviours as collaborators or mixins with one job each, an
 
 ## Precision
 
-Strict **0%**, lenient **18%** over 11 sampled findings on httpx, rich, fastapi, pydantic and black ([method](../precision.md#method)).
+Strict **0%**, lenient **18%** over 11 sampled findings on the audit corpus ([method](../precision.md#method)).
 
 ## Elsewhere
 

@@ -22,7 +22,7 @@ Keep one, import it from the other module; if the copies must diverge, make the 
 
 ## Precision
 
-Strict **4%**, lenient **43%** over 23 sampled findings on httpx, rich, fastapi, pydantic and black ([method](../precision.md#method)).
+Strict **4%**, lenient **43%** over 23 sampled findings on the audit corpus ([method](../precision.md#method)).
 
 ## Elsewhere
 

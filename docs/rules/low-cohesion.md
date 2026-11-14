@@ -23,7 +23,7 @@ Split along the groups the message lists; each becomes its own class, or the sta
 
 ## Precision
 
-Not in the Phase 1 sample (no findings on the corpus, or added later); see [docs/precision.md](../precision.md) for the Phase 2 addendum.
+Not sampled (no findings on the audit corpus); see [docs/precision.md](../precision.md).
 
 ## Elsewhere
 

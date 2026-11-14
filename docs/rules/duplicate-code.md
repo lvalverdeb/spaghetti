@@ -8,7 +8,7 @@ Duplicated token sequence (type-2 clone) across files.
 
 ## Why it matters
 
-Type-2 clones (same structure, renamed identifiers and literals) are the duplication tools like PMD-CPD and Sonar report; renaming variables does not make a copy independent.
+Type-2 clones (same structure, renamed identifiers and literals) are the duplication tools like PMD-CPD and Sonar report; renaming variables does not make a copy independent. Only clones containing logic count: import blocks, declaration tables and argument forwarding are not reported, and a clone never runs from one function or class into a differently named neighbour.
 
 ## How to fix it
 
@@ -22,7 +22,7 @@ Extract the shared logic into one function parameterised by what differs; for te
 
 ## Precision
 
-Not in the Phase 1 sample (no findings on the corpus, or added later); see [docs/precision.md](../precision.md) for the Phase 2 addendum.
+Strict **30%**, lenient **57%** over 30 sampled findings on the audit corpus ([method](../precision.md#method)).
 
 ## Elsewhere
 

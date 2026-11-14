@@ -16,7 +16,7 @@ Write `dict[str, int]`, or better a `TypedDict` or dataclass when the keys are f
 
 ## Precision
 
-Strict **33%**, lenient **33%** over 3 sampled findings on httpx, rich, fastapi, pydantic and black ([method](../precision.md#method)).
+Strict **33%**, lenient **33%** over 3 sampled findings on the audit corpus ([method](../precision.md#method)).
 
 ## Elsewhere
 

@@ -16,7 +16,7 @@ Fix permissions or re-encode as UTF-8; exclude generated or binary paths with `e
 
 ## Precision
 
-Not in the Phase 1 sample (no findings on the corpus, or added later); see [docs/precision.md](../precision.md) for the Phase 2 addendum.
+Not sampled (no findings on the audit corpus); see [docs/precision.md](../precision.md).
 
 ## Elsewhere
 

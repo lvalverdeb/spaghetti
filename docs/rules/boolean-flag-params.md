@@ -22,7 +22,7 @@ Split into one function per behaviour, or replace the flags with an `Enum` or a 
 
 ## Precision
 
-Strict **3%**, lenient **12%** over 33 sampled findings on httpx, rich, fastapi, pydantic and black ([method](../precision.md#method)).
+Strict **3%**, lenient **12%** over 33 sampled findings on the audit corpus ([method](../precision.md#method)).
 
 ## Elsewhere
 

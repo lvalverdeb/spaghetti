@@ -16,7 +16,7 @@ Name the exception type you expect; use `except Exception:` only at a top-level 
 
 ## Precision
 
-Strict **0%**, lenient **0%** over 1 sampled findings on httpx, rich, fastapi, pydantic and black ([method](../precision.md#method)).
+Strict **0%**, lenient **0%** over 1 sampled findings on the audit corpus ([method](../precision.md#method)).
 
 ## Elsewhere
 

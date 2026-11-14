@@ -22,7 +22,7 @@ Split by cohesion: group the functions that share private helpers or state into 
 
 ## Precision
 
-Strict **23%**, lenient **62%** over 39 sampled findings on httpx, rich, fastapi, pydantic and black ([method](../precision.md#method)).
+Strict **23%**, lenient **62%** over 39 sampled findings on the audit corpus ([method](../precision.md#method)).
 
 ## Elsewhere
 

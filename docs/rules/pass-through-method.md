@@ -16,7 +16,7 @@ Let callers use the delegate directly, or give the method a reason to exist (val
 
 ## Precision
 
-Strict **0%**, lenient **0%** over 38 sampled findings on httpx, rich, fastapi, pydantic and black ([method](../precision.md#method)).
+Strict **0%**, lenient **0%** over 38 sampled findings on the audit corpus ([method](../precision.md#method)).
 
 ## Elsewhere
 

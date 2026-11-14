@@ -16,7 +16,7 @@ Collapse the ABC into its only implementation; reintroduce the abstraction when 
 
 ## Precision
 
-Strict **0%**, lenient **50%** over 2 sampled findings on httpx, rich, fastapi, pydantic and black ([method](../precision.md#method)).
+Strict **0%**, lenient **50%** over 2 sampled findings on the audit corpus ([method](../precision.md#method)).
 
 ## Elsewhere
 

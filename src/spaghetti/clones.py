@@ -30,6 +30,41 @@ TokenStream = tuple[list[str], list[int]]
 
 _SKIP = (ast.Load, ast.Store, ast.Del, ast.expr_context)
 _IDENTIFIER_FIELDS = ("id", "arg", "attr", "name", "asname", "module", "rest")
+_DEFS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+
+# A clone must contain some of these to be duplicated *logic*. A window made only
+# of calls, assignments, imports and literals is a declaration table, an import
+# block or argument forwarding: the 2026-11 audit found every false positive of
+# the rule in that shape (13 of 30 samples) and no true positive without a
+# control-flow, comparison or comprehension token.
+_LOGIC = frozenset(
+    {
+        "If",
+        "IfExp",
+        "For",
+        "AsyncFor",
+        "While",
+        "Try",
+        "TryStar",
+        "With",
+        "AsyncWith",
+        "Match",
+        "Return",
+        "Raise",
+        "Assert",
+        "Yield",
+        "YieldFrom",
+        "Await",
+        "BoolOp",
+        "Compare",
+        "ListComp",
+        "SetComp",
+        "DictComp",
+        "GeneratorExp",
+        "Lambda",
+        "AugAssign",
+    }
+)
 
 
 def token_stream(tree: ast.Module) -> TokenStream:
@@ -40,6 +75,13 @@ def token_stream(tree: ast.Module) -> TokenStream:
         if isinstance(node, _SKIP):
             return
         line = getattr(node, "lineno", line)
+        if isinstance(node, _DEFS):
+            # A boundary token carrying the definition's name: a window can only
+            # run from one definition into the next when both sides are entering
+            # a definition of the same name, so route handlers or visitor methods
+            # that merely sit next to each other never fuse into one clone.
+            names.append(f"\x00{node.name}")
+            lines.append(line)
         if isinstance(node, ast.Constant):
             names.append("LIT")
             lines.append(line)
@@ -123,6 +165,7 @@ class _Index:
         self.encoded = [
             [vocab.setdefault(name, len(vocab) + 1) for name in streams[f][0]] for f in self.files
         ]
+        self.logic = frozenset(code for name, code in vocab.items() if name in _LOGIC)
         self.width = width
         self.hashes = [_window_hashes(tokens, width) for tokens in self.encoded]
         self.by_hash: dict[int, list[Position]] = {}
@@ -159,6 +202,8 @@ class _Index:
         length = self.width
         while self.same_token_everywhere(members, length):
             length += 1
+        if self.logic.isdisjoint(self.encoded[first[0]][first[1] : first[1] + length]):
+            return None  # data, imports or argument forwarding, not logic
         kept = self._drop_overlapping(members, length)
         if len(kept) < 2:
             return None

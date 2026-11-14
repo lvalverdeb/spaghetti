@@ -16,7 +16,7 @@ Import the sibling module directly. Off by default: `import-cycle` detects the r
 
 ## Precision
 
-Strict **0%**, lenient **4%** over 26 sampled findings on httpx, rich, fastapi, pydantic and black ([method](../precision.md#method)).
+Strict **0%**, lenient **4%** over 26 sampled findings on the audit corpus ([method](../precision.md#method)).
 
 ## Elsewhere
 

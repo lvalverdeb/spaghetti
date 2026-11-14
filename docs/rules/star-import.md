@@ -16,7 +16,7 @@ Import the names you use. Off by default: Ruff F403 owns this.
 
 ## Precision
 
-Strict **0%**, lenient **0%** over 12 sampled findings on httpx, rich, fastapi, pydantic and black ([method](../precision.md#method)).
+Strict **0%**, lenient **0%** over 12 sampled findings on the audit corpus ([method](../precision.md#method)).
 
 ## Elsewhere
 

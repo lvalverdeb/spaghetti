@@ -16,7 +16,7 @@ Return the new value and let the caller assign it, or hold the state in an objec
 
 ## Precision
 
-Strict **0%**, lenient **94%** over 16 sampled findings on httpx, rich, fastapi, pydantic and black ([method](../precision.md#method)).
+Strict **0%**, lenient **94%** over 16 sampled findings on the audit corpus ([method](../precision.md#method)).
 
 ## Elsewhere
 

@@ -16,7 +16,7 @@ Add the operation to the owning class, or expose the value through a property or
 
 ## Precision
 
-Strict **0%**, lenient **9%** over 33 sampled findings on httpx, rich, fastapi, pydantic and black ([method](../precision.md#method)).
+Strict **0%**, lenient **9%** over 33 sampled findings on the audit corpus ([method](../precision.md#method)).
 
 ## Elsewhere
 

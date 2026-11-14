@@ -180,7 +180,9 @@ RULE_DOCS: dict[str, RuleDoc] = {
     "duplicate-code": _d(
         "Type-2 clones (same structure, renamed identifiers and literals) are the "
         "duplication tools like PMD-CPD and Sonar report; renaming variables does not "
-        "make a copy independent.",
+        "make a copy independent. Only clones containing logic count: import blocks, "
+        "declaration tables and argument forwarding are not reported, and a clone never "
+        "runs from one function or class into a differently named neighbour.",
         "Extract the shared logic into one function parameterised by what differs; for "
         "test setup prefer fixtures or parametrisation over copied blocks.",
         "SonarQube duplicated blocks (CPD)",

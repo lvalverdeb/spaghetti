@@ -16,7 +16,7 @@ Turn each into a tracked issue and reference it, or do it now. Keep the marker o
 
 ## Precision
 
-Strict **86%**, lenient **91%** over 22 sampled findings on httpx, rich, fastapi, pydantic and black ([method](../precision.md#method)).
+Strict **86%**, lenient **91%** over 22 sampled findings on the audit corpus ([method](../precision.md#method)).
 
 ## Elsewhere
 

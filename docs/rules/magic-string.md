@@ -16,7 +16,7 @@ Replace with an `Enum` or a named constant. Off by default: domain vocabulary (s
 
 ## Precision
 
-Strict **0%**, lenient **5%** over 37 sampled findings on httpx, rich, fastapi, pydantic and black ([method](../precision.md#method)).
+Strict **0%**, lenient **5%** over 37 sampled findings on the audit corpus ([method](../precision.md#method)).
 
 ## Elsewhere
 

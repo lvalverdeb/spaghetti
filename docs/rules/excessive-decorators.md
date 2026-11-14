@@ -22,7 +22,7 @@ Combine them into one purpose-built decorator, or move cross-cutting concerns (c
 
 ## Precision
 
-Strict **0%**, lenient **0%** over 2 sampled findings on httpx, rich, fastapi, pydantic and black ([method](../precision.md#method)).
+Strict **0%**, lenient **0%** over 2 sampled findings on the audit corpus ([method](../precision.md#method)).
 
 ## Elsewhere
 

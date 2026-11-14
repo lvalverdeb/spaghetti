@@ -22,7 +22,7 @@ Invert conditions into guard clauses that `return`/`continue` early, extract the
 
 ## Precision
 
-Strict **47%**, lenient **81%** over 32 sampled findings on httpx, rich, fastapi, pydantic and black ([method](../precision.md#method)).
+Strict **47%**, lenient **81%** over 32 sampled findings on the audit corpus ([method](../precision.md#method)).
 
 ## Elsewhere
 

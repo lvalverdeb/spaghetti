@@ -22,7 +22,7 @@ Introduce Parameter Object: bundle the related arguments into a dataclass (or pa
 
 ## Precision
 
-Strict **2%**, lenient **28%** over 40 sampled findings on httpx, rich, fastapi, pydantic and black ([method](../precision.md#method)).
+Strict **2%**, lenient **28%** over 40 sampled findings on the audit corpus ([method](../precision.md#method)).
 
 ## Elsewhere
 

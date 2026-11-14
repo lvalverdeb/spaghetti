@@ -56,7 +56,8 @@ def test_renamed_copy_is_detected_as_one_group(tmp_path: Path):
     (group,) = groups
     assert [s.file for s in group.sites] == [a, b]
     assert group.sites[0].start_line == 2 and group.sites[0].end_line == 13
-    assert group.tokens == len(_stream(original)[0])
+    # Everything but the definition-boundary token, which carries the (different) name.
+    assert group.tokens == len(_stream(original)[0]) - 1
 
 
 def test_no_group_below_min_tokens_or_for_distinct_code(tmp_path: Path):
@@ -110,3 +111,61 @@ def test_duplicated_regions_drop_a_span_whose_only_copy_is_inside_itself():
     a = Path("a.py")
     groups = [CloneGroup(50, (CloneSite(a, 10, 20), CloneSite(a, 16, 26)))]
     assert duplicated_regions(groups, [a]) == []
+
+
+_LOGIC_BODY = (
+    "    total = 0\n"
+    "    for item in items:\n"
+    "        if item.ok and item.value > limit:\n"
+    "            total += item.value\n"
+    "        elif item.retry:\n"
+    "            total -= 1\n"
+    "    return total\n"
+)
+
+
+def test_import_blocks_and_declaration_tables_are_not_clones():
+    imports = "".join(f"from pkg.mod{i} import name{i}, other{i}\n" for i in range(30))
+    table = (
+        "TABLE = [\n"
+        + "".join(
+            f"    Entry(key=Key('a{i}', 'b{i}'), renamed=Key('c{i}', 'd{i}'), note='n{i}'),\n"
+            for i in range(20)
+        )
+        + "]\n"
+    )
+    a = _stream(imports + table + "def f(items, limit):\n" + _LOGIC_BODY)
+    b = _stream(imports + table + "def g(rows, cap):\n" + _LOGIC_BODY.replace("item", "row"))
+    groups = find_clone_groups({Path("a.py"): a, Path("b.py"): b}, 20)
+    # Only the function bodies survive: the import block and the table are data.
+    assert len(groups) == 1
+    (group,) = groups
+    assert all(site.start_line > 50 for site in group.sites)
+
+
+def test_clones_do_not_run_across_differently_named_definitions():
+    def pair(n1: str, n2: str) -> str:
+        return (
+            f"class V:\n"
+            f"    def {n1}(self, node):\n"
+            f"        if node.kind == 'a':\n"
+            f"            return self.visit_default(node)\n"
+            f"        yield from self.line()\n"
+            f"    def {n2}(self, leaf):\n"
+            f"        if leaf.kind == 'b':\n"
+            f"            return self.visit_default(leaf)\n"
+            f"        yield from self.line()\n"
+        )
+
+    a = _stream(pair("visit_semi", "visit_end"))
+    b = _stream(pair("visit_colon", "visit_dedent"))
+    groups = find_clone_groups({Path("a.py"): a, Path("b.py"): b}, 12)
+    # Each method body is a legitimate clone of its counterpart, but no group
+    # spans the boundary between two methods with different names.
+    assert groups
+    for group in groups:
+        for site in group.sites:
+            assert not (site.start_line <= 5 <= site.end_line and site.end_line > 6)
+    same = _stream(pair("visit_x", "visit_y"))
+    merged = find_clone_groups({Path("a.py"): same, Path("b.py"): same}, 12)
+    assert any(s.start_line <= 2 and s.end_line >= 9 for g in merged for s in g.sites)
