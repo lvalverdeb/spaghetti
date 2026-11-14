@@ -1,8 +1,5 @@
-# spaghetti is its own git repo nested inside the uv workspace root, so
-# `git rev-parse --show-toplevel` would return spaghetti's own root, not
-# the workspace root where `uv build` actually writes dist/ — derive it
-# from the Makefile's own location instead (always one level up).
-REPO_ROOT := $(shell realpath $(dir $(realpath $(lastword $(MAKEFILE_LIST))))..)
+# The project root: uv writes dist/ and build/ next to pyproject.toml.
+REPO_ROOT := $(shell realpath $(dir $(realpath $(lastword $(MAKEFILE_LIST)))))
 
 .PHONY: clean build publish test lint format-check verify check reinstall help
 
