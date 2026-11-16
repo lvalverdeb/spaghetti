@@ -94,7 +94,7 @@ cargo install spaghetti
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/lvalverdeb/spaghetti-rs/releases/latest/download/spaghetti-installer.sh | sh
 ```
 
-Current releases: spaghetti-detector 2.6.0 on PyPI, spaghetti 2.6.1 on crates.io.
+Current releases: spaghetti-detector 2.6.1 on PyPI, spaghetti 2.6.2 on crates.io.
 
 ## Usage
 
