@@ -4,6 +4,7 @@ mutable package registry used by every check function and the CLI.
 
 from __future__ import annotations
 
+import functools
 import re
 import tomllib
 from pathlib import Path
@@ -11,16 +12,13 @@ from pathlib import Path
 # ── Workspace root discovery ──────────────────────────────────────────────────
 
 
+@functools.cache
 def _find_workspace_root(start: Path) -> Path | None:
     """Walk upward from ``start`` for the ``pyproject.toml`` declaring the uv workspace.
 
-    Returns ``None`` rather than raising when no such ancestor exists —
-    spaghetti is pip-installable and importable standalone (e.g. in this
-    package's own standalone CI checkout, which has no ambient workspace at
-    all), and a bare import must not
-    crash. Callers fall back to an empty default package registry in that
-    case; the CLI already requires an explicit ``--config``/``--package`` or
-    errors out when the resolved registry is empty.
+    Returns ``None`` rather than raising when no such ancestor exists:
+    spaghetti is pip-installable and runs outside any workspace, and callers
+    then print absolute paths.
     """
     for candidate in (start, *start.parents):
         pyproject = candidate / "pyproject.toml"
@@ -35,7 +33,15 @@ def _find_workspace_root(start: Path) -> Path | None:
     return None
 
 
-WORKSPACE_ROOT: Path | None = _find_workspace_root(Path(__file__).resolve().parent)
+def workspace_root() -> Path | None:
+    """The uv workspace enclosing the current directory, if any.
+
+    Reported paths are shown relative to it. It is the *scanned* tree's
+    workspace, found from the working directory, never the directory
+    spaghetti itself is installed in.
+    """
+    return _find_workspace_root(Path.cwd())
+
 
 # ── Thresholds ────────────────────────────────────────────────────────────────
 

@@ -16,12 +16,13 @@ Severity = Literal["info", "warning", "error"]
 
 def _display_path(path: Path) -> str:
     """Workspace-relative path when possible, absolute otherwise."""
-    from spaghetti.config import WORKSPACE_ROOT
+    from spaghetti.config import workspace_root
 
-    if WORKSPACE_ROOT is None:
+    root = workspace_root()
+    if root is None:
         return str(path)
     try:
-        return str(path.relative_to(WORKSPACE_ROOT))
+        return str(path.relative_to(root))
     except ValueError:
         return str(path)
 

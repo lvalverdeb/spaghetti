@@ -601,3 +601,27 @@ def test_html_format_writes_a_single_page_with_trend(project: Path):
     assert proc.stdout.startswith("<!DOCTYPE html>")
     assert 'aria-label="4 snapshot(s)"' in proc.stdout
     assert "<h2>Findings" in proc.stdout
+
+
+# ── Displayed paths are relative to the scanned tree's uv workspace ─────────
+
+
+def test_display_path_is_relative_to_the_workspace_of_the_working_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The workspace is found from cwd, as the Rust port does, not from where
+    spaghetti is installed: an installed tool must show the same paths."""
+    from spaghetti.models import _display_path
+
+    workspace = tmp_path / "ws"
+    (workspace / "pkg").mkdir(parents=True)
+    (workspace / "pyproject.toml").write_text("[tool.uv.workspace]\nmembers = []\n")
+    target = workspace / "pkg" / "mod.py"
+
+    monkeypatch.chdir(workspace)
+    assert _display_path(target) == "pkg/mod.py"
+
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    assert _display_path(target) == str(target)
