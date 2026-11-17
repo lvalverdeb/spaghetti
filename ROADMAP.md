@@ -7,8 +7,8 @@
 > do not.
 
 Drafted 2026-11-13 against spaghetti 1.4.0 / spaghetti-rs 1.4.1; all six phases shipped by
-2026-11-14 and published as spaghetti-detector 2.6.0 (PyPI) and spaghetti 2.6.1 (crates.io,
-prebuilt binaries on GitHub). Companion to
+2026-11-14 and published; current releases are spaghetti-detector 2.6.1 (PyPI) and spaghetti
+2.6.2 (crates.io, prebuilt binaries on GitHub). Companion to
 [SDD.md](SDD.md) (what the rules are) and
 [RUST_PORT_PROPOSAL.md](RUST_PORT_PROPOSAL.md) (why there are two implementations).
 
@@ -278,9 +278,21 @@ Rust deviation: CPython starts the generator in `f(x for x in y)` at the call's 
 at `x`, so a duplicate-code range began a line late when the call broke after `(`. Fixed and
 shipped as spaghetti-rs 2.6.1; all 37 repositories are byte-identical since.
 
-*Published 2026-11-14:* spaghetti-detector 2.6.0 on PyPI (`make publish`; the trusted-publisher
-workflow in `publish.yml` still needs its PyPI side configured), spaghetti 2.6.1 on crates.io,
-and prebuilt binaries plus shell/PowerShell installers for five targets on the spaghetti-rs GitHub
+Scanning one of those repositories by a *relative* `--package` path from inside its own uv
+workspace then exposed two path-display differences the corpus never exercises (every corpus
+case passes an absolute path from a directory with no workspace). Python looked for the uv
+workspace around its own installed source, a leftover of the monorepo it was born in, so an
+installed copy always printed absolute paths while Rust looked from the working directory;
+and the Rust duplicate-function-body message quoted absolute paths where every other message
+is workspace-relative. Fixed as spaghetti-detector 2.6.1 (`config.workspace_root()` from cwd)
+and spaghetti-rs 2.6.2 (`ScanConfig.workspace_root`), both released 2026-11-16, and
+`scripts/conformance.py` now runs one case from inside a throwaway uv workspace by a relative
+path, with a two-file duplicate-function fixture, requiring relative paths and both clone rules
+in the report; against the released Rust 2.6.1 binary that case fails as intended.
+
+*Published 2026-11-14, patched 2026-11-16:* spaghetti-detector 2.6.0 then 2.6.1 on PyPI (`make
+publish`; the trusted-publisher workflow in `publish.yml` still needs its PyPI side configured),
+spaghetti 2.6.1 then 2.6.2 on crates.io, and prebuilt binaries plus shell/PowerShell installers for five targets on the spaghetti-rs GitHub
 release (cargo-dist; the Apple Silicon build moved to `macos-15` after GitHub retired `macos-14`).
 The two ports no longer share a version number: the Rust port takes patch releases for Rust-only
 fixes, and conformance, not the version string, is what ties them together.
@@ -333,5 +345,5 @@ All four accepted as recommended. Recorded here so the phases above can assume t
 Roughly five to six months of focused single-developer work to the end of Phase 4.
 Phase 5 is where the project then lives.
 
-All six phases shipped on 2026-11-13 and 2026-11-14, published as spaghetti-detector 2.6.0
-(PyPI) and spaghetti 2.6.1 (crates.io, GitHub release binaries).
+All six phases shipped on 2026-11-13 and 2026-11-14; current releases are spaghetti-detector
+2.6.1 (PyPI) and spaghetti 2.6.2 (crates.io, GitHub release binaries).

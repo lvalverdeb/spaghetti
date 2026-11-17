@@ -425,8 +425,9 @@ is about five times faster than a cold one (see [docs/benchmark.md](docs/benchma
 - **Conformance.** `scripts/conformance.py --rust BIN` runs both ports over the whole corpus and
   fails on any byte difference in `--json` or `--plan --json`; one case scans a copy of this
   source from inside a throwaway uv workspace by a relative path, so workspace-relative path
-  display is compared too. The Rust repository's CI runs it on every push. Beyond the corpus, both ports were run over 37 private repositories (576 k lines);
-  the one difference found became spaghetti-rs 2.6.1, and all 37 are identical since.
+  display is compared too. The Rust repository's CI runs it on every push. Beyond the corpus,
+  both ports were run over 37 private repositories (576 k lines); the differences found became
+  spaghetti-rs 2.6.1 and the 2.6.1 / 2.6.2 path fixes, and all 37 are identical since.
 
 ## Trend, Compare, Hotspots and the HTML Report
 
